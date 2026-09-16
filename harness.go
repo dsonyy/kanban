@@ -114,6 +114,10 @@ func (s *store) agentCommand(harness string, sp step, resume string) (cmd, sessi
 func (s *store) trustProblem(harness, dir string) string {
 	switch harness {
 	case "claude":
+		// Claude Code itself skips the trust dialog when this is set.
+		if os.Getenv("CLAUDE_CODE_SANDBOXED") != "" {
+			return ""
+		}
 		cfg := filepath.Join(os.Getenv("CLAUDE_CONFIG_DIR"), ".claude.json")
 		home, _ := os.UserHomeDir()
 		if os.Getenv("CLAUDE_CONFIG_DIR") == "" {

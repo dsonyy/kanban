@@ -206,6 +206,19 @@ func TestUntrustedDirectoryDoesNotStartAgent(t *testing.T) {
 	}
 }
 
+func TestSandboxedClaudeTrustsEverything(t *testing.T) {
+	h := newHarness(t)
+	fake := h.fakeAgents(false)
+	h.env = append(h.env, "CLAUDE_CODE_SANDBOXED=1")
+	h.start()
+	h.project("demo", "columns:\n  - name: work\n    harness: claude\n    steps:\n      - agent: Runs anywhere\n")
+	id := h.newItem("work", "No trust entry\n")
+	h.waitItem(id, "status: done")
+	if _, err := os.Stat(filepath.Join(fake, "claude.log")); err != nil {
+		t.Fatal("agent did not start with CLAUDE_CODE_SANDBOXED set")
+	}
+}
+
 func TestCodexIntegration(t *testing.T) {
 	h := newHarness(t)
 	h.fakeAgents(true)
