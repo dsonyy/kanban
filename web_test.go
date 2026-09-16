@@ -200,3 +200,45 @@ func TestTasksInRemovedColumnStayVisible(t *testing.T) {
 		t.Fatal("task in a removed column is not on the web board")
 	}
 }
+
+func TestTerminalAcceptsLargePaste(t *testing.T) {
+	h := newHarness(t)
+	h.start()
+	h.project("demo", "columns:\n  - name: backlog\n    steps: []\n")
+	id := h.newItem("backlog", "Paste target\n")
+	c := h.browser()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	ws, _, err := websocket.Dial(ctx, "ws://"+h.addr+"/term/item/"+id, &websocket.DialOptions{HTTPClient: c})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.CloseNow()
+	ws.Write(ctx, websocket.MessageText, []byte("resize 120 40"))
+	time.Sleep(500 * time.Millisecond)
+
+	target := filepath.Join(t.TempDir(), "paste.txt")
+	ws.Write(ctx, websocket.MessageBinary, []byte("stty -echo; cat > "+target+"\r"))
+	time.Sleep(time.Second)
+	line := strings.Repeat("0123456789abcdef", 5) + "\n"
+	paste := strings.Repeat(line, 1200)
+	if err := ws.Write(ctx, websocket.MessageBinary, []byte(paste)); err != nil {
+		t.Fatalf("writing a %d byte paste: %v", len(paste), err)
+	}
+	time.Sleep(2 * time.Second)
+	ws.Write(ctx, websocket.MessageBinary, []byte("\x04"))
+	go func() {
+		for {
+			if _, _, err := ws.Read(ctx); err != nil {
+				return
+			}
+		}
+	}()
+	h.waitFor(func() bool {
+		b, _ := os.ReadFile(target)
+		return len(b) == len(paste)
+	}, "the whole paste to reach the program in the terminal")
+	if ws.Ping(ctx) != nil {
+		t.Fatal("terminal connection closed after the paste")
+	}
+}

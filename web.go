@@ -397,6 +397,8 @@ func (wb *web) terminal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer c.CloseNow()
+	// The library default of 32 KiB closes the terminal as soon as someone pastes a long prompt.
+	c.SetReadLimit(maxBody)
 	cmd := exec.Command("tmux", "-L", wb.s.tmux, "attach", "-t", "="+session)
 	cmd.Env = append(slices.DeleteFunc(os.Environ(), func(e string) bool { return strings.HasPrefix(e, "TMUX=") }), "TERM=xterm-256color")
 	f, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: 80, Rows: 24})
