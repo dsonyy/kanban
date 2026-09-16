@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -267,5 +268,39 @@ func TestAgentWaitingBeforeSession(t *testing.T) {
 	log, _ := h.run("", "item", id, "log")
 	if !strings.Contains(log, "event: resumed") || strings.Contains(log, "event: failed") {
 		t.Fatalf("expected attention to resolve on session start:\n%s", log)
+	}
+}
+
+func TestTmuxServerKilledMidStep(t *testing.T) {
+	h := newHarness(t)
+	fake := h.fakeAgents()
+	h.start()
+	h.project("demo", `columns:
+  - name: raw
+    steps:
+      - agent: sleep 60
+  - name: claude
+    harness: claude
+    steps:
+      - agent: Long task
+`)
+	rawID := h.newItem("raw", "Raw agent\n")
+	claudeID := h.newItem("claude", "Claude agent\n")
+	out := h.waitItem(claudeID, "status: running", "transcript: ")
+	h.waitItem(rawID, "status: running")
+	session := strings.TrimSpace(strings.SplitN(strings.SplitN(out, "session: ", 2)[1], "\n", 2)[0])
+
+	if b, err := exec.Command("tmux", "-L", h.tmux(), "kill-server").CombinedOutput(); err != nil {
+		t.Fatalf("kill-server: %v %s", err, b)
+	}
+	h.waitItem(rawID, "status: failed", "step session was lost")
+	h.waitItem(claudeID, "status: done")
+	calls, _ := os.ReadFile(filepath.Join(fake, "claude.log"))
+	if !strings.Contains(string(calls), "resume="+session) {
+		t.Fatalf("claude step was not resumed after tmux died:\n%s", calls)
+	}
+	log, _ := h.run("", "item", claudeID, "log")
+	if !strings.Contains(log, "event: recovering") || strings.Contains(log, "event: failed") {
+		t.Fatalf("unexpected recovery log:\n%s", log)
 	}
 }
