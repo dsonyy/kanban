@@ -39,7 +39,7 @@ esac
 printf '{"type":"assistant","timestamp":"%s","message":{"id":"m1","role":"assistant","usage":{"input_tokens":10,"cache_creation_input_tokens":1000,"cache_read_input_tokens":35000,"output_tokens":1200},"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"go test ./..."}}]}}\n' "$(now)" >> "$transcript"
 printf '{"type":"user","timestamp":"%s","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok  kanban  1.2s"}]}}\n' "$(now)" >> "$transcript"
 printf '{"type":"assistant","timestamp":"%s","message":{"id":"m2","role":"assistant","usage":{"input_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":36500,"output_tokens":300},"content":[{"type":"text","text":"All **tests pass**.\\n\\n| file | status |\\n|---|---|\\n| a.go | ok |"}]}}\n' "$(now)" >> "$transcript"
-sleep 1.5
+sleep 5
 printf '{"session_id":"%s","last_assistant_message":"All tests pass."}' "$session" | hook stop
 sleep 60
 `

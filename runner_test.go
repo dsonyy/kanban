@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func (h *harness) project(name, boardYAML string) {
@@ -148,7 +149,7 @@ func TestAgentLimitQueue(t *testing.T) {
 	h.project("demo", `columns:
   - name: work
     steps:
-      - agent: sleep 2
+      - agent: sleep 6
 `)
 	a := h.newItem("work", "first\n")
 	h.waitItem(a, "status: running")
@@ -178,7 +179,7 @@ func TestRestartKeepsRunningStep(t *testing.T) {
 	h.project("demo", `columns:
   - name: work
     steps:
-      - agent: sleep 3; echo survived
+      - agent: sleep 6; echo survived
       - shell: echo next-step
 `)
 	id := h.newItem("work", "long\n")
@@ -218,7 +219,7 @@ func TestBrokenBoardDoesNotKillRunningStep(t *testing.T) {
 	board := `columns:
   - name: work
     steps:
-      - agent: sleep 3
+      - agent: sleep 8
 `
 	h.project("demo", board)
 	id := h.newItem("work", "survive a bad edit\n")
@@ -235,4 +236,32 @@ func TestBrokenBoardDoesNotKillRunningStep(t *testing.T) {
 	if strings.Contains(out, "attention") {
 		t.Fatalf("attention not cleared after fixing board:\n%s", out)
 	}
+}
+
+func TestHalfWrittenStateIsLeftAlone(t *testing.T) {
+	h := newHarness(t)
+	h.start()
+	h.project("demo", "columns:\n  - name: work\n    steps:\n      - agent: sleep 8\n")
+	id := h.newItem("work", "Edited by hand mid-run\n")
+	h.waitItem(id, "status: running")
+	statePath := filepath.Join(h.home, "projects", "demo", "items", id+".yaml")
+	state, _ := os.ReadFile(statePath)
+
+	os.WriteFile(statePath, nil, 0o644)
+	time.Sleep(2 * time.Second)
+	if b, _ := os.ReadFile(statePath); len(b) != 0 {
+		t.Fatalf("server wrote over a file that was being saved:\n%s", b)
+	}
+	if !strings.Contains(h.tmuxPanes(), " step") {
+		t.Fatal("running step was killed while its state file was being saved")
+	}
+
+	os.WriteFile(statePath, []byte("column: [unclosed\n"), 0o644)
+	time.Sleep(time.Second)
+	if !strings.Contains(h.tmuxPanes(), " step") {
+		t.Fatal("running step was killed while its state file was unreadable")
+	}
+
+	os.WriteFile(statePath, state, 0o644)
+	h.waitItem(id, "status: done")
 }

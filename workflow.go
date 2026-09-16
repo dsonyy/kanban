@@ -4,13 +4,15 @@ const defaultBoard = `# Columns run their steps top to bottom when a task enters
 # Step types: shell, agent, human, goto, setup. See docs/phases for details.
 
 setup:
-  generate: claude -p --allowedTools Read,Glob,Grep "Look at this repository and write a bash script that installs its dependencies and prepares it for running tests. Print only the script, starting with #!/usr/bin/env bash." > "$KANBAN_SETUP"
+  generate: |
+    claude -p --allowedTools=Read,Glob,Grep "Look at this repository and write a bash script that installs its dependencies. The script is stored outside the repository and runs with a checkout of it as the current directory, so it must not change directory. Only install dependencies, do not run tests or builds. Print only the script, starting with #!/usr/bin/env bash." > "$KANBAN_SETUP"
 
 suggest:
   to: todo
-  command: claude -p --allowedTools Read,Glob,Grep "$(cat "$KANBAN_FAMILY_FILE")
+  command: |
+    claude -p --allowedTools=Read,Glob,Grep "$(cat "$KANBAN_FAMILY_FILE")
 
-Suggest up to three next tasks that follow from the tasks above. Print only YAML: a list of items, each with a content field holding the task description in markdown." > "$KANBAN_SUGGESTIONS"
+    Suggest up to three next tasks that follow from the tasks above. Print only YAML: a list of items, each with a content field holding the task description in markdown." > "$KANBAN_SUGGESTIONS"
 
 columns:
   - name: backlog

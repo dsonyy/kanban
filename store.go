@@ -242,6 +242,9 @@ func (s *store) setLastProject(name string) error {
 }
 
 func (s *store) resolveProject(name string) (string, error) {
+	if name != "" && !validName.MatchString(name) {
+		return "", badRequest("invalid project name %q", name)
+	}
 	if name == "" {
 		var st map[string]string
 		if err := readYAML(filepath.Join(s.home, "state.yaml"), &st); err != nil || st["project"] == "" {
@@ -432,8 +435,8 @@ func (s *store) transition(proj string, id int, fn func(*itemState) (event, erro
 func (s *store) update(proj string, id int, fn func(*itemState) ([]event, error)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var st itemState
-	if err := readYAML(s.itemPath(proj, id, ".yaml"), &st); err != nil {
+	st, err := s.readState(proj, id)
+	if err != nil {
 		return err
 	}
 	before, _ := yaml.Marshal(st)
@@ -484,6 +487,20 @@ func (s *store) reply(proj string, id int, text []byte) (item, error) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+var errPartialState = errors.New("state file is empty or incomplete, probably being written")
+
+// An editor saving in place truncates the file first; writing state back at that moment would replace the file and lose the edit.
+func (s *store) readState(proj string, id int) (itemState, error) {
+	var st itemState
+	if err := readYAML(s.itemPath(proj, id, ".yaml"), &st); err != nil {
+		return st, err
+	}
+	if st.Column == "" {
+		return st, errPartialState
+	}
+	return st, nil
+}
 
 func (s *store) boardRaw(proj string) ([]byte, error) {
 	return os.ReadFile(filepath.Join(s.projectDir(proj), "board.yaml"))

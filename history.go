@@ -116,18 +116,40 @@ func (s *store) undo(hash string) (map[string]string, error) {
 	}
 	s.gitMu.Lock()
 	defer s.gitMu.Unlock()
-	if out, err := s.git("revert", "--no-commit", hash); err != nil {
-		s.git("revert", "--abort")
-		return nil, badRequest("cannot undo %s: %s", hash, strings.TrimSpace(out))
+	if _, err := s.git("rev-parse", "--verify", "-q", hash+"^"); err != nil {
+		return nil, badRequest("cannot undo %s: it is the first commit", hash)
 	}
-	// Event logs and run records are append-only history, so undo keeps their current content.
-	// One checkout per pathspec: git rejects the whole command when any pathspec matches nothing.
-	for _, spec := range []string{":(glob)**/*.log.yaml", ":(glob)**/*.runs/**"} {
-		s.git("checkout", "HEAD", "--", spec)
+	out, err := s.git("diff-tree", "--no-commit-id", "--name-only", "-r", hash)
+	if err != nil {
+		return nil, badRequest("cannot undo %s: %v", hash, err)
 	}
-	if out, err := s.git("commit", "-q", "--allow-empty", "-m", "Undo "+hash); err != nil {
-		s.git("revert", "--abort")
-		return nil, badRequest("cannot undo %s: %s", hash, strings.TrimSpace(out))
+	// Event logs and run records are append-only history, so undo never touches them.
+	// Other files go back to their version before the commit; later edits to them are overwritten.
+	var restored []string
+	s.mu.Lock()
+	for _, path := range strings.Split(strings.TrimSpace(out), "\n") {
+		if path == "" || strings.HasSuffix(path, ".log.yaml") || strings.Contains(path, ".runs/") {
+			continue
+		}
+		full := filepath.Join(s.home, path)
+		if old, err := exec.Command("git", "-C", s.home, "show", hash+"^:"+path).Output(); err == nil {
+			if err := os.MkdirAll(filepath.Dir(full), 0o755); err == nil {
+				err = writeFile(full, old)
+			}
+		} else {
+			os.Remove(full)
+		}
+		restored = append(restored, path)
+	}
+	s.mu.Unlock()
+	if len(restored) == 0 {
+		return nil, badRequest("commit %s only changed event logs, nothing to undo", hash)
+	}
+	if _, err := s.git("add", "-A"); err != nil {
+		return nil, err
+	}
+	if _, err := s.git("commit", "-q", "--allow-empty", "-m", "Undo "+hash[:min(len(hash), 12)]); err != nil {
+		return nil, err
 	}
 	head, err := s.git("rev-parse", "HEAD")
 	return map[string]string{"undone": hash, "commit": strings.TrimSpace(head)}, err

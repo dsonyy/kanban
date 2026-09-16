@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"go.yaml.in/yaml/v3"
 )
 
 func TestDefaultBoardAndTaskFiles(t *testing.T) {
@@ -14,6 +16,35 @@ func TestDefaultBoardAndTaskFiles(t *testing.T) {
 	out, code := h.run("", "project", "new", "fresh")
 	h.expect(out, code, 0, "name: planning", "name: plan-review", "name: implementation", "name: review", "name: merge")
 	board, _ := os.ReadFile(filepath.Join(h.home, "projects", "fresh", "board.yaml"))
+	var b struct {
+		Setup   struct{ Generate string }
+		Suggest struct{ To, Command string }
+		Columns []column
+	}
+	if err := yaml.Unmarshal(board, &b); err != nil {
+		t.Fatal(err)
+	}
+	commands := []string{b.Setup.Generate, b.Suggest.Command}
+	for _, c := range b.Columns {
+		for _, sp := range c.Steps {
+			if sp.Shell != "" {
+				commands = append(commands, sp.Shell)
+			}
+		}
+	}
+	if !strings.Contains(b.Setup.Generate, "#!/usr/bin/env bash.\" > \"$KANBAN_SETUP\"") || !strings.Contains(b.Suggest.Command, "content field") {
+		t.Fatalf("default commands are cut short:\n%q\n%q", b.Setup.Generate, b.Suggest.Command)
+	}
+	for _, c := range commands {
+		for _, shell := range []string{"sh", "zsh", "bash"} {
+			if _, err := exec.LookPath(shell); err != nil {
+				continue
+			}
+			if out, err := exec.Command(shell, "-n", "-c", c).CombinedOutput(); err != nil {
+				t.Fatalf("default command is not valid %s: %v %s\n%s", shell, err, out, c)
+			}
+		}
+	}
 	check := h.cmd("project", "fresh", "board", "edit")
 	check.Stdin = strings.NewReader(string(board))
 	if b, err := check.CombinedOutput(); err != nil {
@@ -33,7 +64,7 @@ func TestSetupScriptGeneration(t *testing.T) {
 	h := newHarness(t)
 	h.start()
 	board := `setup:
-  generate: printf 'FENCEbash\necho ran > "$KANBAN_TASK_DIR/setup.txt"\nFENCE\n' > "$KANBAN_SETUP"
+  generate: printf 'Here is the script:\n\nFENCEbash\necho ran > "$KANBAN_TASK_DIR/setup.txt"\nFENCE\n\n- **Note:** nothing is pinned.\n' > "$KANBAN_SETUP"
 columns:
   - name: work
     steps:
@@ -49,9 +80,11 @@ columns:
 	script := filepath.Join(h.home, "projects", "demo", "setup.sh")
 	b, _ := os.ReadFile(script)
 	fi, _ := os.Stat(script)
-	if strings.Contains(string(b), "```") || fi.Mode()&0o100 == 0 {
+	if strings.Contains(string(b), "```") || strings.Contains(string(b), "Note") || fi.Mode()&0o100 == 0 {
 		t.Fatalf("setup script not cleaned or not executable (%v):\n%s", fi.Mode(), b)
 	}
+	os.WriteFile(script, []byte("#!/bin/sh\necho ran > \"$KANBAN_TASK_DIR/setup.txt\"\n"), 0o644)
+	os.Chmod(script, 0o644)
 	second := h.newItem("work", "Reuses deps\n")
 	h.waitItem(second, "step: 2", "status: done")
 	if log, _ := h.run("", "item", second, "log"); strings.Contains(log, "attention") {
@@ -113,33 +146,43 @@ func TestHistoryAndUndo(t *testing.T) {
 		}
 	}
 
+	latestWith := func(file, after string) string {
+		var hash string
+		h.waitFor(func() bool {
+			hist, _ = h.run("", "history")
+			first, _, _ := strings.Cut(strings.TrimPrefix(hist, "- hash: "), "\n")
+			block := strings.SplitN(hist, "- hash: ", 3)[1]
+			hash = first
+			return first != after && strings.Contains(block, "- "+file)
+		}, "commit touching "+file)
+		return hash
+	}
+	created, _, _ := strings.Cut(strings.TrimPrefix(hist, "- hash: "), "\n")
+
 	edit := h.cmd("item", id, "edit")
 	edit.Stdin = strings.NewReader("Changed text\n")
 	edit.Run()
+	editHash := latestWith("projects/demo/items/"+id+".md", created)
 	h.run("", "item", id, "move", "work")
-	var hash string
-	h.waitFor(func() bool {
-		hist, _ = h.run("", "history")
-		first, _, _ := strings.Cut(strings.TrimPrefix(hist, "- hash: "), "\n")
-		hash = first
-		return strings.Contains(hist, id+".md") && strings.Count(hist, "- hash:") >= 2
-	}, "commit with the edit")
-
+	hash := latestWith("projects/demo/items/"+id+".yaml", editHash)
 	if !strings.Contains(hist, "message: projects/demo/items/") {
 		t.Fatalf("commit message lost the start of a path:\n%s", hist)
 	}
-	out, code := h.run("", "history", hash, "undo")
-	h.expect(out, code, 0, "undone: "+hash)
+
+	for _, undo := range []string{hash, editHash} {
+		out, code := h.run("", "history", undo, "undo")
+		h.expect(out, code, 0, "undone: "+undo)
+	}
 	h.waitItem(id, "Original text", "column: backlog")
 	h.waitFor(func() bool {
 		hist, _ := h.run("", "history")
-		return strings.Contains(hist, "message: Undo "+hash)
+		return strings.Contains(hist, "message: Undo "+hash[:12])
 	}, "undo commit")
 	log, _ := h.run("", "item", id, "log")
 	if !strings.Contains(log, "event: edited") || !strings.Contains(log, "to: work") {
 		t.Fatalf("undo rewrote the event log:\n%s", log)
 	}
-	out, code = h.run("", "history", "nothex", "undo")
+	out, code := h.run("", "history", "nothex", "undo")
 	h.expect(out, code, 1, "invalid commit")
 }
 
@@ -203,4 +246,19 @@ columns:
 	if out, _ := h.run("", "item", mid, "suggestions"); strings.Contains(out, "Add metrics") {
 		t.Fatalf("accepted suggestion still listed:\n%s", out)
 	}
+}
+
+func TestFailedSetupGenerationLeavesNoScript(t *testing.T) {
+	h := newHarness(t)
+	h.start()
+	h.project("demo", "setup:\n  generate: |\n    : > \"$KANBAN_SETUP\"; exit 1\ncolumns:\n  - name: work\n    steps:\n      - setup: true\n")
+	id := h.newItem("work", "Generator breaks\n")
+	h.waitItem(id, "status: waiting", "No setup script")
+	h.run("", "item", id, "approve")
+	h.waitItem(id, "status: failed", "generate step 0 exited with 1")
+	if _, err := os.Stat(filepath.Join(h.home, "projects", "demo", "setup.sh")); !os.IsNotExist(err) {
+		t.Fatalf("failed generator left a script behind: %v", err)
+	}
+	h.run("", "item", id, "retry")
+	h.waitItem(id, "status: waiting", "No setup script")
 }

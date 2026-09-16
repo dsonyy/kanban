@@ -26,15 +26,23 @@ func (s *store) finishSetupScript(proj string) error {
 	if err != nil {
 		return err
 	}
-	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
-	if len(lines) > 1 && strings.HasPrefix(lines[0], "```") && strings.HasPrefix(lines[len(lines)-1], "```") {
-		lines = lines[1 : len(lines)-1]
+	// Agents often wrap the script in a markdown fence and add prose around it; a stray fence line makes bash start an interactive shell.
+	text := strings.TrimSpace(string(b))
+	if i := strings.Index(text, "```"); i >= 0 && !strings.HasPrefix(text, "#!") {
+		body := text[i+3:]
+		if nl := strings.IndexByte(body, '\n'); nl >= 0 {
+			body = body[nl+1:]
+		}
+		if j := strings.Index(body, "```"); j >= 0 {
+			body = body[:j]
+		}
+		text = strings.TrimSpace(body)
 	}
-	if strings.TrimSpace(strings.Join(lines, "")) == "" {
+	if text == "" {
 		os.Remove(s.setupPath(proj))
 		return errors.New("script is empty")
 	}
-	if err := os.WriteFile(s.setupPath(proj), []byte(strings.Join(lines, "\n")+"\n"), 0o755); err != nil {
+	if err := os.WriteFile(s.setupPath(proj), []byte(text+"\n"), 0o755); err != nil {
 		return err
 	}
 	return os.Chmod(s.setupPath(proj), 0o755)
@@ -139,15 +147,17 @@ func (s *store) reconcile() error {
 	}
 	var refs []ref
 	agents := 0
+	unreadable := map[string]bool{}
 	for _, proj := range projs {
 		ids, err := s.itemIDs(proj)
 		if err != nil {
 			return err
 		}
 		for _, id := range ids {
-			var st itemState
-			if err := readYAML(s.itemPath(proj, id, ".yaml"), &st); err != nil {
+			st, err := s.readState(proj, id)
+			if err != nil {
 				log.Printf("runner: item %d: %v", id, err)
+				unreadable[sessionName(id)] = true
 				continue
 			}
 			if st.Status == "running" && st.Kind == "agent" {
@@ -178,8 +188,11 @@ func (s *store) reconcile() error {
 		if err != nil {
 			log.Printf("runner: item %d: %v", r.id, err)
 		}
-		st := r.st
-		if readYAML(s.itemPath(r.proj, r.id, ".yaml"), &st) != nil || st.Column != archive {
+		st, err := s.readState(r.proj, r.id)
+		if err != nil {
+			st = r.st
+		}
+		if err != nil || st.Column != archive {
 			keepPanes[st.Pane] = true
 			keepSessions[sessionName(r.id)] = true
 		}
@@ -187,7 +200,7 @@ func (s *store) reconcile() error {
 
 	killedSessions := map[string]bool{}
 	for _, p := range panes {
-		if !taskSession.MatchString(p.session) {
+		if !taskSession.MatchString(p.session) || unreadable[p.session] {
 			continue
 		}
 		if !keepSessions[p.session] && !killedSessions[p.session] {
@@ -272,7 +285,8 @@ func (s *store) advanceStep(proj string, id int, st *itemState, panes map[string
 			return []event{{Event: "attention", Column: st.Column, Step: ptr(st.Step), Message: sp.Human}}
 		case "setup":
 			script := s.setupPath(proj)
-			if _, err := os.Stat(script); err == nil {
+			if fi, err := os.Stat(script); err == nil && fi.Size() > 0 {
+				os.Chmod(script, 0o755)
 				return s.start(proj, id, st, col, step{Shell: shq(script)}, agents)
 			}
 			if !st.Generate {
@@ -393,6 +407,10 @@ func (s *store) advanceStep(proj string, id int, st *itemState, panes map[string
 				return stepFailed(fmt.Sprintf("%s exited before finishing its turn (exit %d)", st.Harness, p.exit), e)
 			}
 			if p.exit != 0 {
+				if st.Kind == "generate" {
+					// A shell redirect creates the script before the generator fails; a leftover would pass as a setup that did nothing.
+					os.Remove(s.setupPath(proj))
+				}
 				return stepFailed(fmt.Sprintf("%s step %d exited with %d", st.Kind, st.Step, p.exit), e)
 			}
 			if st.Kind == "generate" {
