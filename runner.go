@@ -199,9 +199,12 @@ func (s *store) reconcile() error {
 	limit := s.config().Agents
 	keepPanes, keepSessions := map[string]bool{}, map[string]bool{}
 	for _, r := range refs {
-		err := s.update(r.proj, r.id, func(st *itemState) ([]event, error) {
-			return s.advance(r.proj, r.id, st, panes, &agents, limit), nil
-		})
+		var err error
+		if !settled(r.st) {
+			err = s.update(r.proj, r.id, func(st *itemState) ([]event, error) {
+				return s.advance(r.proj, r.id, st, panes, &agents, limit), nil
+			})
+		}
 		if err != nil {
 			log.Printf("runner: item %d: %v", r.id, err)
 		}
@@ -230,6 +233,16 @@ func (s *store) reconcile() error {
 		}
 	}
 	return nil
+}
+
+// settled items have nothing for the runner to do until someone changes them, so the runner skips their transaction.
+// advanceStep only reacts to a hand-moved column (ran != column) for these statuses.
+func settled(st itemState) bool {
+	switch st.Status {
+	case "done", "waiting", "failed":
+		return st.Ran != "" && st.Ran == st.Column
+	}
+	return st.Column == archive
 }
 
 func (s *store) advance(proj string, id int, st *itemState, panes map[string]pane, agents *int, limit int) []event {
