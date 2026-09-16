@@ -33,6 +33,8 @@ func (s *store) git(args ...string) (string, error) {
 }
 
 func (s *store) initHistory() error {
+	// Called with the instance flock held, so a lock file here was left by a git run that died with a previous server.
+	os.Remove(filepath.Join(s.home, ".git", "index.lock"))
 	if _, err := os.Stat(filepath.Join(s.home, ".git")); errors.Is(err, os.ErrNotExist) {
 		if _, err := s.git("init", "-q"); err != nil {
 			return err
@@ -57,6 +59,11 @@ func (s *store) commitLoop() {
 func (s *store) commitChanges() error {
 	s.gitMu.Lock()
 	defer s.gitMu.Unlock()
+	// A git process killed mid-commit (OOM, kill -9) would otherwise block history forever.
+	lock := filepath.Join(s.home, ".git", "index.lock")
+	if fi, err := os.Stat(lock); err == nil && time.Since(fi.ModTime()) > time.Minute {
+		os.Remove(lock)
+	}
 	status, err := s.git("status", "--porcelain")
 	if err != nil || strings.TrimSpace(status) == "" {
 		return err

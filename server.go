@@ -79,6 +79,7 @@ func serve(home, addr, tmuxName string) error {
 		fmt.Print("kanban server already running\n")
 		return call(home, []string{"server"}, nil)
 	}
+	removeInterruptedWrites(home)
 	token, err := loadToken(home)
 	if err != nil {
 		return err

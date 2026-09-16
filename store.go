@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -187,6 +188,16 @@ func writeYAML(path string, v any) error {
 	return writeFile(path, b)
 }
 
+// removeInterruptedWrites deletes temporary files of atomic writes cut off by a crash. Called with the instance flock held.
+func removeInterruptedWrites(home string) {
+	filepath.WalkDir(filepath.Join(home, "projects"), func(path string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && strings.HasPrefix(d.Name(), ".tmp-") {
+			os.Remove(path)
+		}
+		return nil
+	})
+}
+
 func writeFile(path string, b []byte) error {
 	f, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
 	if err != nil {
@@ -341,18 +352,14 @@ func (s *store) createItem(proj, col string, content []byte) (item, error) {
 }
 
 func (s *store) nextID() (int, error) {
-	projs, err := s.projects()
-	if err != nil {
-		return 0, err
-	}
+	// Any item file counts, not only state: a crash between writing N.md and N.yaml leaves content that must not be reused.
 	max := 0
-	for _, p := range projs {
-		ids, err := s.itemIDs(p)
-		if err != nil {
-			return 0, err
-		}
-		if len(ids) > 0 && ids[len(ids)-1] > max {
-			max = ids[len(ids)-1]
+	for _, rel := range s.keys("projects/") {
+		if _, file, ok := strings.Cut(rel, "/items/"); ok {
+			name, _, _ := strings.Cut(file, ".")
+			if id, err := strconv.Atoi(name); err == nil && id > max {
+				max = id
+			}
 		}
 	}
 	return max + 1, nil

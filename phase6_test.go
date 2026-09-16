@@ -275,3 +275,55 @@ func TestFailedSetupGenerationLeavesNoScript(t *testing.T) {
 	h.run("", "item", id, "retry")
 	h.waitItem(id, "status: waiting", "No setup script")
 }
+
+func TestCrashLeftoversAreCleanedOnStart(t *testing.T) {
+	h := newHarness(t)
+	h.start()
+	h.project("demo", "columns:\n  - name: backlog\n    steps: []\n")
+	id := h.newItem("backlog", "Survives a crash\n")
+	h.waitFor(func() bool {
+		hist, _ := h.run("", "history")
+		return strings.Contains(hist, "items/"+id+".md")
+	}, "first commit")
+
+	h.server.Process.Signal(os.Kill)
+	h.server.Wait()
+	h.server = nil
+	os.WriteFile(filepath.Join(h.home, ".git", "index.lock"), nil, 0o644)
+	tmp := filepath.Join(h.home, "projects", "demo", "items", ".tmp-123456")
+	os.WriteFile(tmp, []byte("half a write"), 0o644)
+
+	h.start()
+	edit := h.cmd("item", id, "edit")
+	edit.Stdin = strings.NewReader("Edited after the crash\n")
+	edit.Run()
+	h.waitFor(func() bool {
+		hist, _ := h.run("", "history")
+		return strings.Count(hist, "- hash:") >= 2
+	}, "history to commit again after a crash mid-commit")
+	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
+		t.Fatalf("temporary file from an interrupted write survived a restart: %v", err)
+	}
+}
+
+func TestItemCreationAfterCrashBetweenWrites(t *testing.T) {
+	h := newHarness(t)
+	h.start()
+	h.project("demo", "columns:\n  - name: backlog\n    steps: []\n")
+	first := h.newItem("backlog", "Before the crash\n")
+
+	h.server.Process.Signal(os.Kill)
+	h.server.Wait()
+	h.server = nil
+	orphan := filepath.Join(h.home, "projects", "demo", "items", "2.md")
+	os.WriteFile(orphan, []byte("Content written just before the crash\n"), 0o644)
+
+	h.start()
+	second := h.newItem("backlog", "After the crash\n")
+	if second == first || second == "2" {
+		t.Fatalf("new item reused id %s", second)
+	}
+	if b, _ := os.ReadFile(orphan); string(b) != "Content written just before the crash\n" {
+		t.Fatalf("orphaned content was overwritten: %q", b)
+	}
+}
