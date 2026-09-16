@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -32,8 +31,7 @@ func newHarness(t *testing.T) *harness {
 	h.addr = ln.Addr().String()
 	ln.Close()
 	tmux := fmt.Sprintf("kanban-test-%d-%d", os.Getpid(), time.Now().UnixNano())
-	env := slices.DeleteFunc(os.Environ(), func(e string) bool { return strings.HasPrefix(e, "CLAUDE_CODE_SANDBOXED=") })
-	h.env = append(env, "KANBAN_HOME="+h.home, "KANBAN_ADDR="+h.addr, "KANBAN_TMUX="+tmux)
+	h.env = append(os.Environ(), "KANBAN_HOME="+h.home, "KANBAN_ADDR="+h.addr, "KANBAN_TMUX="+tmux)
 	t.Cleanup(func() {
 		h.stop()
 		sock, _ := exec.Command("tmux", "-L", tmux, "display", "-p", "#{socket_path}").Output()

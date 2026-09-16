@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -109,65 +108,6 @@ func (s *store) agentCommand(harness string, sp step, resume string) (cmd, sessi
 		return strings.Join(append(append(parts, args...), dq(sp.Agent)), " "), resume, nil
 	}
 	return "", "", fmt.Errorf("unknown harness %q", harness)
-}
-
-func (s *store) trustProblem(harness, dir string) string {
-	switch harness {
-	case "claude":
-		// Claude Code itself skips the trust dialog when this is set.
-		if os.Getenv("CLAUDE_CODE_SANDBOXED") != "" {
-			return ""
-		}
-		cfg := filepath.Join(os.Getenv("CLAUDE_CONFIG_DIR"), ".claude.json")
-		home, _ := os.UserHomeDir()
-		if os.Getenv("CLAUDE_CONFIG_DIR") == "" {
-			cfg = filepath.Join(home, ".claude.json")
-		}
-		var c struct {
-			Projects map[string]struct {
-				HasTrustDialogAccepted bool `json:"hasTrustDialogAccepted"`
-			} `json:"projects"`
-		}
-		if b, err := os.ReadFile(cfg); err == nil {
-			json.Unmarshal(b, &c)
-		}
-		// Claude inherits trust from parent directories, except from the home directory itself.
-		for d := dir; ; d = filepath.Dir(d) {
-			if d != home && c.Projects[d].HasTrustDialogAccepted {
-				return ""
-			}
-			if d == filepath.Dir(d) {
-				break
-			}
-		}
-		suggest := dir
-		if strings.HasPrefix(dir, filepath.Join(s.home, "worktrees")+string(filepath.Separator)) {
-			suggest = filepath.Join(s.home, "worktrees")
-		}
-		return fmt.Sprintf("Claude Code does not trust %s. Run claude once in %s, accept the trust prompt, then retry.", dir, suggest)
-	case "codex":
-		root := dir
-		if out, err := exec.Command("git", "-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir").Output(); err == nil {
-			root = strings.TrimSuffix(strings.TrimSpace(string(out)), string(filepath.Separator)+".git")
-		}
-		home := os.Getenv("CODEX_HOME")
-		if home == "" {
-			h, _ := os.UserHomeDir()
-			home = filepath.Join(h, ".codex")
-		}
-		b, _ := os.ReadFile(filepath.Join(home, "config.toml"))
-		section := false
-		for _, line := range strings.Split(string(b), "\n") {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "[") {
-				section = line == fmt.Sprintf("[projects.%q]", root)
-			} else if section && strings.ReplaceAll(line, " ", "") == `trust_level="trusted"` {
-				return ""
-			}
-		}
-		return fmt.Sprintf("Codex does not trust %s. Run codex once in %s, accept the trust prompt, then retry.", root, root)
-	}
-	return ""
 }
 
 type toolCall struct {

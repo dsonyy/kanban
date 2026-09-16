@@ -17,7 +17,24 @@ import (
 
 var taskSession = regexp.MustCompile(`^kanban-[0-9]+$`)
 
-const maxGotos = 20
+const (
+	maxGotos         = 20
+	sessionStartWait = 20 * time.Second
+)
+
+func (s *store) screenTail(pane string) string {
+	out, err := s.tmuxCmd("capture-pane", "-p", "-J", "-t", pane)
+	if err != nil {
+		return "screen unavailable"
+	}
+	var lines []string
+	for _, l := range strings.Split(out, "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			lines = append(lines, l)
+		}
+	}
+	return strings.Join(lines[max(0, len(lines)-4):], " / ")
+}
 
 func (s *store) setupPath(proj string) string { return filepath.Join(s.projectDir(proj), "setup.sh") }
 
@@ -436,6 +453,17 @@ func (s *store) advanceStep(proj string, id int, st *itemState, panes map[string
 		if idle == 0 && st.Kind == "agent" && !integrated {
 			idle = defaultIdle
 		}
+		if integrated && !st.SessionSeen {
+			wait := sp.Idle
+			if wait == 0 {
+				wait = sessionStartWait
+			}
+			if took > wait && st.Attention == "" {
+				st.Attention = fmt.Sprintf("%s has not started its session after %s and may be waiting for input: %s", st.StepHarness, wait, s.screenTail(p.id))
+				return []event{{Event: "attention", Column: st.Column, Step: ptr(st.Step), Message: st.Attention}}
+			}
+			return nil
+		}
 		quiet := time.Since(p.activity).Round(time.Second)
 		if idle > 0 && quiet > idle && st.Attention == "" {
 			st.Attention = fmt.Sprintf("no output for %s", quiet)
@@ -456,10 +484,6 @@ func (s *store) start(proj string, id int, st *itemState, col column, sp step, a
 		harness = harnessOf(col, sp)
 	}
 	if harness != rawHarness {
-		if problem := s.trustProblem(harness, s.workdir(proj, id)); problem != "" {
-			st.Status, st.Attention = "failed", problem
-			return []event{{Event: "failed", Column: st.Column, Step: ptr(st.Step), Message: problem}}
-		}
 		resume := ""
 		if (sp.Resume || st.Recover) && st.Session != "" {
 			resume = st.Session
@@ -476,7 +500,7 @@ func (s *store) start(proj string, id int, st *itemState, col column, sp step, a
 		if session != st.Session {
 			st.Transcript = ""
 		}
-		st.Harness, st.Session, st.Recover = harness, session, false
+		st.Harness, st.Session, st.Recover, st.SessionSeen = harness, session, false, false
 	}
 	p, _, _ := s.board(proj)
 	err := os.MkdirAll(s.itemPath(proj, id, ".files"), 0o755)

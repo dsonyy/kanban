@@ -112,6 +112,7 @@ type itemState struct {
 	Generate    bool           `yaml:"generate,omitempty"`
 	Loops       map[string]int `yaml:"loops,omitempty"`
 	Parents     []int          `yaml:"parents,omitempty"`
+	SessionSeen bool           `yaml:"session_seen,omitempty"`
 }
 
 func (st *itemState) enter(col string) {
@@ -639,8 +640,13 @@ func (s *store) hook(name string, id int, body []byte) (map[string]string, error
 				result = "ignored"
 				return nil, nil
 			}
-			st.Session, st.Transcript = payload.SessionID, payload.TranscriptPath
-			return []event{{Event: "session", Column: st.Column, Step: ptr(st.Step), Message: st.StepHarness + " " + payload.SessionID}}, nil
+			st.Session, st.Transcript, st.SessionSeen = payload.SessionID, payload.TranscriptPath, true
+			evs := []event{{Event: "session", Column: st.Column, Step: ptr(st.Step), Message: st.StepHarness + " " + payload.SessionID}}
+			if st.Attention != "" {
+				evs = append(evs, event{Event: "resumed", Column: st.Column, Step: ptr(st.Step), Message: st.Attention})
+				st.Attention = ""
+			}
+			return evs, nil
 		case "stop":
 			if st.Transcript != "" {
 				if _, u, err := readTranscript(st.StepHarness, st.Transcript); err == nil {

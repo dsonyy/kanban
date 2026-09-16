@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +23,9 @@ echo "argv session=$session resume=$resume prompt=$prompt" >> "$FAKE_DIR/claude.
 hook() { cmd=$(sed -n "s/.*\"command\": \"\(.* hook $1\)\".*/\1/p" "$settings"); eval "$cmd"; }
 transcript="$FAKE_DIR/$session.jsonl"
 now() { date -u +%Y-%m-%dT%H:%M:%S.000Z; }
+case "$prompt" in
+  *WAIT-TRUST*) echo "Do you trust the files in this folder? (y/n)"; read answer; [ "$answer" = y ] || exit 1 ;;
+esac
 case "$prompt" in
   *SOCKET-STDIN*) while [ ! -f "$FAKE_DIR/session-sent" ]; do sleep 0.2; done ;;
   *) printf '{"session_id":"%s","transcript_path":"%s"}' "$session" "$transcript" | hook session-start ;;
@@ -73,33 +75,25 @@ printf '{"session_id":"%s"}' "$session" | eval "$stop"
 sleep 60
 `
 
-func (h *harness) fakeAgents(trustRepo bool) string {
+func (h *harness) fakeAgents() string {
 	h.t.Helper()
 	dir := h.t.TempDir()
 	bin := filepath.Join(dir, "bin")
 	os.MkdirAll(bin, 0o755)
 	os.WriteFile(filepath.Join(bin, "claude"), []byte(fakeClaude), 0o755)
 	os.WriteFile(filepath.Join(bin, "codex"), []byte(fakeCodex), 0o755)
-	claudeCfg, codexHome := filepath.Join(dir, "claude"), filepath.Join(dir, "codex")
-	os.MkdirAll(claudeCfg, 0o755)
-	os.MkdirAll(codexHome, 0o755)
-	if trustRepo {
-		b, _ := json.Marshal(map[string]any{"projects": map[string]any{h.repo: map[string]bool{"hasTrustDialogAccepted": true}}})
-		os.WriteFile(filepath.Join(claudeCfg, ".claude.json"), b, 0o644)
-		os.WriteFile(filepath.Join(codexHome, "config.toml"), []byte("[projects.\""+h.repo+"\"]\ntrust_level = \"trusted\"\n"), 0o644)
-	}
 	for i, e := range h.env {
 		if strings.HasPrefix(e, "PATH=") {
 			h.env[i] = "PATH=" + bin + ":" + strings.TrimPrefix(e, "PATH=")
 		}
 	}
-	h.env = append(h.env, "FAKE_DIR="+dir, "CLAUDE_CONFIG_DIR="+claudeCfg, "CODEX_HOME="+codexHome)
+	h.env = append(h.env, "FAKE_DIR="+dir)
 	return dir
 }
 
 func TestClaudeIntegration(t *testing.T) {
 	h := newHarness(t)
-	fake := h.fakeAgents(true)
+	fake := h.fakeAgents()
 	h.start()
 	h.project("demo", `columns:
   - name: plan
@@ -169,7 +163,7 @@ func TestClaudeIntegration(t *testing.T) {
 
 func TestClaudeAttentionAndEarlyExit(t *testing.T) {
 	h := newHarness(t)
-	fake := h.fakeAgents(true)
+	fake := h.fakeAgents()
 	h.start()
 	h.project("demo", `columns:
   - name: ask
@@ -194,34 +188,9 @@ func TestClaudeAttentionAndEarlyExit(t *testing.T) {
 	h.waitItem(quitter, "status: failed", "claude exited before finishing its turn")
 }
 
-func TestUntrustedDirectoryDoesNotStartAgent(t *testing.T) {
-	h := newHarness(t)
-	fake := h.fakeAgents(false)
-	h.start()
-	h.project("demo", "columns:\n  - name: work\n    harness: claude\n    steps:\n      - agent: never runs\n")
-	id := h.newItem("work", "Untrusted\n")
-	h.waitItem(id, "status: failed", "Claude Code does not trust "+h.repo, "Run claude once in")
-	if _, err := os.Stat(filepath.Join(fake, "claude.log")); err == nil {
-		t.Fatal("agent started in an untrusted directory")
-	}
-}
-
-func TestSandboxedClaudeTrustsEverything(t *testing.T) {
-	h := newHarness(t)
-	fake := h.fakeAgents(false)
-	h.env = append(h.env, "CLAUDE_CODE_SANDBOXED=1")
-	h.start()
-	h.project("demo", "columns:\n  - name: work\n    harness: claude\n    steps:\n      - agent: Runs anywhere\n")
-	id := h.newItem("work", "No trust entry\n")
-	h.waitItem(id, "status: done")
-	if _, err := os.Stat(filepath.Join(fake, "claude.log")); err != nil {
-		t.Fatal("agent did not start with CLAUDE_CODE_SANDBOXED set")
-	}
-}
-
 func TestCodexIntegration(t *testing.T) {
 	h := newHarness(t)
-	h.fakeAgents(true)
+	h.fakeAgents()
 	h.start()
 	h.project("demo", "columns:\n  - name: work\n    harness: codex\n    steps:\n      - agent: Refactor\n")
 	id := h.newItem("work", "Codex task\n")
@@ -254,7 +223,7 @@ func TestHookWithoutServerExitsOne(t *testing.T) {
 
 func TestHookPayloadOverSocket(t *testing.T) {
 	h := newHarness(t)
-	fake := h.fakeAgents(true)
+	fake := h.fakeAgents()
 	h.start()
 	h.project("demo", "columns:\n  - name: work\n    harness: claude\n    steps:\n      - agent: SOCKET-STDIN\n")
 	id := h.newItem("work", "Payload over a socket\n")
@@ -280,4 +249,23 @@ func TestHookPayloadOverSocket(t *testing.T) {
 	h.waitItem(id, "transcript: "+transcript)
 	os.WriteFile(filepath.Join(fake, "session-sent"), nil, 0o644)
 	h.waitItem(id, "status: done", "output: 1500")
+}
+
+func TestAgentWaitingBeforeSession(t *testing.T) {
+	h := newHarness(t)
+	h.fakeAgents()
+	h.start()
+	h.project("demo", "columns:\n  - name: work\n    harness: claude\n    steps:\n      - agent: WAIT-TRUST\n        idle: 2s\n")
+	id := h.newItem("work", "Blocked on a prompt\n")
+	h.waitItem(id, "status: running", "may be waiting for input", "Do you trust the files in this folder? (y/n)")
+	cmd := h.cmd("item", id, "reply")
+	cmd.Stdin = strings.NewReader("y\n")
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("reply: %v\n%s", err, b)
+	}
+	h.waitItem(id, "status: done")
+	log, _ := h.run("", "item", id, "log")
+	if !strings.Contains(log, "event: resumed") || strings.Contains(log, "event: failed") {
+		t.Fatalf("expected attention to resolve on session start:\n%s", log)
+	}
 }
