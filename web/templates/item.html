@@ -1,17 +1,17 @@
 {{define "view"}}
 <div class="item-page">
   <main id="view" class="item" data-sse="change-{{.Project}}">
-    <div class="item-head">
-      <h1>#{{.Item.ID}}</h1>
-      <dl class="state">
-        <div><dt>column</dt><dd>{{.Item.Column}}</dd></div>
-        <div><dt>step</dt><dd>{{.Item.Step}}</dd></div>
-        <div><dt>status</dt><dd class="status-{{.Item.Status}}">{{.Item.Status}}</dd></div>
-        <div><dt>waited on you</dt><dd>{{.Waited}}</dd></div>
-        {{if .Item.Harness}}<div><dt>{{.Item.Harness}}</dt><dd>{{.Item.Session}}</dd></div>{{end}}
-        {{if .Tokens}}<div><dt>tokens</dt><dd>{{.Tokens}}</dd></div>{{end}}
-      </dl>
-    </div>
+    <h1 class="item-title">{{.Title}}</h1>
+    {{if .Description}}<div class="md item-description">{{.Description}}</div>{{end}}
+    <dl class="state">
+      <div><dt>Column</dt><dd>{{.Item.Column}}</dd></div>
+      <div><dt>Status</dt><dd class="status-{{.Item.Status}}">{{.Item.Status}}</dd></div>
+      <div><dt>Waited on you</dt><dd>{{.Waited}}</dd></div>
+      {{if .Item.Personality}}<div><dt>Personality</dt><dd>{{.Item.Personality}}</dd></div>{{end}}
+      {{if .Item.Tags}}<div><dt>Tags</dt><dd>{{range .Item.Tags}}<span class="tag">{{.}}</span>{{end}}</dd></div>{{end}}
+      {{if .Item.Harness}}<div><dt>Session</dt><dd class="mono">{{.Item.Harness}} {{.Item.Session}}</dd></div>{{end}}
+      {{if .Tokens}}<div><dt>Tokens</dt><dd>{{.Tokens}}</dd></div>{{end}}
+    </dl>
     {{if .Item.Attention}}<p class="flag block">{{.Item.Attention}}</p>{{end}}
     <div class="actions">
       {{if eq .Item.Status "waiting"}}<button data-post="/item/{{.Item.ID}}/approve" class="primary">Approve</button>{{end}}
@@ -25,20 +25,9 @@
       {{if ne .Item.Column "archive"}}<button data-post="/item/{{.Item.ID}}/archive">Archive</button>{{end}}
     </div>
 
-    <h2>Relations</h2>
     <div class="relations">
-      <div>
-        <span class="muted">parents</span>
-        {{range .Parents}}<span class="rel"><a href="/ui/{{.Project}}/item/{{.ID}}">#{{.ID}} {{firstline .Content}}</a> <button data-post="/item/{{$.Item.ID}}/unlink/{{.ID}}" aria-label="Unlink parent {{.ID}}">×</button></span>{{else}}<span class="muted">none</span>{{end}}
-      </div>
-      <div>
-        <span class="muted">children</span>
-        {{range .Children}}<span class="rel"><a href="/ui/{{.Project}}/item/{{.ID}}">#{{.ID}} {{firstline .Content}}</a></span>{{else}}<span class="muted">none</span>{{end}}
-      </div>
-      <form data-link="{{.Item.ID}}" class="inline">
-        <input name="parent" inputmode="numeric" pattern="[0-9]+" placeholder="Parent id" aria-label="Parent id" required>
-        <button type="submit">Link parent</button>
-      </form>
+      <p>{{if .Parents}}Parents: {{range .Parents}}<a href="/ui/{{.Project}}/item/{{.ID}}">{{firstline .Content}}</a> {{end}}{{else}}No parents.{{end}}</p>
+      <p>{{if .Children}}Children: {{range .Children}}<a href="/ui/{{.Project}}/item/{{.ID}}">{{firstline .Content}}</a> {{end}}{{else}}No children.{{end}}</p>
     </div>
 
     {{if or .CanSuggest .Suggestions}}
@@ -69,7 +58,7 @@
       {{range .Events}}
       <li>
         <time>{{ago .At}}</time>
-        <span><b>{{.Event}}</b>{{if .From}} {{.From}} → {{.To}}{{else if .To}} {{.To}}{{end}}{{if .Column}} {{.Column}}{{end}}{{with deref .Step}} · step {{.}}{{end}}{{if .Kind}} · {{.Kind}}{{end}}{{with deref .Exit}} · exit {{.}}{{end}}{{if .Took}} · {{.Took}}{{end}}{{if and .Message (ne .Event "failed")}} · {{.Message}}{{end}}</span>
+        <span><b>{{.Event}}</b>{{if .From}} {{.From}} → {{.To}}{{else if .To}} {{.To}}{{end}}{{if .Column}} {{.Column}}{{end}}{{if .Kind}} · {{.Kind}}{{end}}{{with deref .Exit}} · exit {{.}}{{end}}{{if .Took}} · {{.Took}}{{end}}{{if and .Message (ne .Event "failed")}} · {{.Message}}{{end}}</span>
       </li>
       {{end}}
     </ol>

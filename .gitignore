@@ -1,3 +1,5 @@
 spike/*/bin/
 *.sock
-kanban
+kk
+web/node_modules/
+web/dist/

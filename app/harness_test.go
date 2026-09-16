@@ -103,7 +103,7 @@ func TestClaudeIntegration(t *testing.T) {
   - name: plan
     harness: claude
     steps:
-      - agent: Plan task $KANBAN_TASK
+      - agent: Plan task $KK_TASK
       - goto: next
   - name: build
     harness: claude
@@ -212,7 +212,7 @@ func TestCodexIntegration(t *testing.T) {
 func TestHookWithoutServerExitsOne(t *testing.T) {
 	h := newHarness(t)
 	cmd := h.cmd("hook", "stop")
-	cmd.Env = append(cmd.Env, "KANBAN_TASK=1")
+	cmd.Env = append(cmd.Env, "KK_TASK=1")
 	cmd.Stdin = strings.NewReader("{}")
 	cmd.Run()
 	if code := cmd.ProcessState.ExitCode(); code != 1 {

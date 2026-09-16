@@ -4,9 +4,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/subtle"
-	"embed"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"html/template"
 	"io/fs"
 	"log"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -26,15 +28,17 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
-)
 
-//go:embed web
-var webFS embed.FS
+	assets "kk/web"
+)
 
 type web struct {
 	s     *store
 	token string
 	pages map[string]*template.Template
+	files fs.FS
+	dev   bool
+	funcs template.FuncMap
 	hub   hub
 }
 
@@ -71,6 +75,22 @@ func (h *hub) publish(project string) {
 	}
 }
 
+// Tags lists every tag used on the board, for the tag input suggestions.
+func (b boardView) Tags() []string {
+	var tags []string
+	for _, c := range b.Columns {
+		for _, it := range c.Items {
+			for _, t := range it.Tags {
+				if !slices.Contains(tags, t) {
+					tags = append(tags, t)
+				}
+			}
+		}
+	}
+	slices.Sort(tags)
+	return tags
+}
+
 type page struct {
 	Projects    []string
 	Project     string
@@ -84,6 +104,12 @@ type page struct {
 	Term        string
 	Feed        feedView
 	Waited      string
+	Title       template.HTML
+	TitleText   string
+	Description template.HTML
+	Content     template.HTML
+	Branch      string
+	Worktree    string
 	Turns       []turnView
 	Tokens      string
 	Graph       template.HTML
@@ -94,6 +120,55 @@ type page struct {
 	Suggesting  bool
 	CanSuggest  bool
 	History     []commit
+}
+
+type dirEntry struct {
+	Name, Path, Modified string
+	Git                  bool
+}
+
+type dirListing struct {
+	Path, Parent string
+	Git          bool
+	Dirs         []dirEntry
+}
+
+func isGitRepo(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, ".git"))
+	return err == nil
+}
+
+// dirs lists the folders of one directory on the server for the repository picker, hidden ones included.
+func (wb *web) dirs(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Query().Get("path")
+	if rest, ok := strings.CutPrefix(path, "~"); path == "" || ok && (rest == "" || strings.HasPrefix(rest, "/")) {
+		home, _ := os.UserHomeDir()
+		path = home + rest
+	}
+	path = filepath.Clean(path)
+	entries, err := os.ReadDir(path)
+	if err != nil || !filepath.IsAbs(path) {
+		reply(w, badRequest("cannot open folder %q", path), nil)
+		return
+	}
+	v := dirListing{Path: path, Git: isGitRepo(path), Dirs: []dirEntry{}}
+	if parent := filepath.Dir(path); parent != path {
+		v.Parent = parent
+	}
+	for _, e := range entries {
+		full := filepath.Join(path, e.Name())
+		if fi, err := os.Stat(full); err == nil && fi.IsDir() {
+			v.Dirs = append(v.Dirs, dirEntry{Name: e.Name(), Path: full, Git: isGitRepo(full), Modified: fi.ModTime().Format("2006-01-02 15:04")})
+		}
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	t, err := wb.tmpl("dirs")
+	if err == nil {
+		err = t.ExecuteTemplate(w, "dirs", v)
+	}
+	if err != nil {
+		log.Print("web: ", err)
+	}
 }
 
 type fileView struct {
@@ -121,8 +196,23 @@ func renderTurns(turns []turn) []turnView {
 }
 
 func newWeb(s *store, token string) (*web, error) {
-	wb := &web{s: s, token: token, pages: map[string]*template.Template{}}
-	funcs := template.FuncMap{
+	wb := &web{s: s, token: token, files: assets.FS}
+	// KK_DEV=1 reads the web client from ./web on every request, so front-end edits show up on reload.
+	if os.Getenv("KK_DEV") == "1" {
+		dir, err := filepath.Abs("web")
+		if err != nil {
+			return nil, err
+		}
+		if _, err := os.Stat(filepath.Join(dir, "templates")); err != nil {
+			return nil, fmt.Errorf("KK_DEV=1 needs the web client sources in %s: run the server from the repository root", dir)
+		}
+		wb.files, wb.dev = os.DirFS(dir), true
+		if err := wb.watchWeb(filepath.Join(dir, "templates")); err != nil {
+			return nil, err
+		}
+		log.Printf("dev mode: serving the web client from %s, reloading pages on changes", dir)
+	}
+	wb.funcs = template.FuncMap{
 		"ago": func(t time.Time) string {
 			if t.IsZero() {
 				return ""
@@ -130,7 +220,11 @@ func newWeb(s *store, token string) (*web, error) {
 			return t.Local().Format("2006-01-02 15:04:05")
 		},
 		"add":       func(a, b int) int { return a + b },
+		"dev":       func() bool { return wb.dev },
+		"assets":    wb.assetTags,
+		"pname":     s.projectName,
 		"firstline": firstLine,
+		"join":      strings.Join,
 		"deref": func(p *int) string {
 			if p == nil {
 				return ""
@@ -138,8 +232,9 @@ func newWeb(s *store, token string) (*web, error) {
 			return strconv.Itoa(*p)
 		},
 	}
-	for _, name := range []string{"board", "item", "feed", "graph", "terminal", "settings", "empty"} {
-		t, err := template.New("").Funcs(funcs).ParseFS(webFS, "web/templates/layout.html", "web/templates/"+name+".html")
+	wb.pages = map[string]*template.Template{}
+	for _, name := range append(pageNames, "dirs", "panel") {
+		t, err := wb.parse(name)
 		if err != nil {
 			return nil, err
 		}
@@ -148,15 +243,49 @@ func newWeb(s *store, token string) (*web, error) {
 	return wb, nil
 }
 
+var pageNames = []string{"board", "item", "feed", "graph", "stats", "terminal", "settings", "new"}
+
+func (wb *web) parse(name string) (*template.Template, error) {
+	if name == "dirs" || name == "panel" {
+		return template.New("").Funcs(wb.funcs).ParseFS(wb.files, "templates/"+name+".html")
+	}
+	return template.New("").Funcs(wb.funcs).ParseFS(wb.files, "templates/layout.html", "templates/"+name+".html")
+}
+
+// tmpl returns a parsed template, parsed again on every call in dev mode.
+func (wb *web) tmpl(name string) (*template.Template, error) {
+	if wb.dev {
+		return wb.parse(name)
+	}
+	return wb.pages[name], nil
+}
+
 func (wb *web) handler(api http.Handler) http.Handler {
-	static, _ := fs.Sub(webFS, "web/static")
+	// Production serves the Vite build; dev serves only public/ (icons), because Vite serves scripts and styles itself.
+	static, _ := fs.Sub(wb.files, "dist")
+	if wb.dev {
+		static, _ = fs.Sub(wb.files, "public")
+	}
 	mux := http.NewServeMux()
-	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(static))))
+	files := http.StripPrefix("/static/", http.FileServer(http.FS(static)))
+	mux.HandleFunc("GET /static/", func(w http.ResponseWriter, r *http.Request) {
+		if wb.dev {
+			w.Header().Set("Cache-Control", "no-store")
+		}
+		files.ServeHTTP(w, r)
+	})
 	mux.HandleFunc("GET /{$}", wb.home)
+	mux.HandleFunc("GET /ui/dirs", wb.dirs)
+	mux.HandleFunc("GET /ui/new", func(w http.ResponseWriter, r *http.Request) {
+		projs, _ := wb.s.projects()
+		wb.render(w, "new", page{Projects: projs, View: "new"})
+	})
 	mux.HandleFunc("GET /ui/{project}", wb.page("board"))
 	mux.HandleFunc("GET /ui/{project}/item/{id}", wb.page("item"))
+	mux.HandleFunc("GET /ui/{project}/item/{id}/panel", wb.page("panel"))
 	mux.HandleFunc("GET /ui/{project}/feed", wb.page("feed"))
 	mux.HandleFunc("GET /ui/{project}/graph", wb.page("graph"))
+	mux.HandleFunc("GET /ui/{project}/stats", wb.page("stats"))
 	mux.HandleFunc("GET /ui/{project}/terminal", wb.page("terminal"))
 	mux.HandleFunc("GET /ui/{project}/settings", wb.page("settings"))
 	mux.HandleFunc("GET /sse", wb.sse)
@@ -170,7 +299,7 @@ func (wb *web) auth(h http.Handler) http.Handler {
 	valid := func(t string) bool { return subtle.ConstantTimeCompare([]byte(t), []byte(wb.token)) == 1 }
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if t := r.URL.Query().Get("token"); t != "" && valid(t) {
-			http.SetCookie(w, &http.Cookie{Name: "kanban_token", Value: t, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: 400 * 24 * 3600})
+			http.SetCookie(w, &http.Cookie{Name: "kk_token", Value: t, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: 400 * 24 * 3600})
 			q := r.URL.Query()
 			q.Del("token")
 			r.URL.RawQuery = q.Encode()
@@ -181,7 +310,7 @@ func (wb *web) auth(h http.Handler) http.Handler {
 			h.ServeHTTP(w, r)
 			return
 		}
-		if c, err := r.Cookie("kanban_token"); err == nil && valid(c.Value) {
+		if c, err := r.Cookie("kk_token"); err == nil && valid(c.Value) {
 			// SameSite ignores ports, so a page on another port of this host still gets the cookie attached.
 			// Browsers send Origin on every POST; a write authorized by the cookie must come from this server's own pages.
 			if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -205,7 +334,7 @@ func (wb *web) home(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		projs, _ := wb.s.projects()
 		if len(projs) == 0 {
-			wb.render(w, "empty", page{Projects: projs})
+			wb.render(w, "new", page{Projects: projs, View: "new"})
 			return
 		}
 		name = projs[0]
@@ -233,7 +362,7 @@ func (wb *web) page(view string) http.HandlerFunc {
 				return
 			}
 			p.Board, err = boardOf(wb.s, name)
-		case "item":
+		case "item", "panel":
 			var id int
 			id, err = strconv.Atoi(r.PathValue("id"))
 			if err != nil {
@@ -258,6 +387,12 @@ func (wb *web) page(view string) http.HandlerFunc {
 				slices.Reverse(p.Runs)
 			}
 			p.Term = "/term/item/" + strconv.Itoa(id)
+			p.Title, p.TitleText, p.Description = taskText(p.Item.Content)
+			var full bytes.Buffer
+			markdown.Convert([]byte(p.Item.Content), &full)
+			p.Content = template.HTML(full.String())
+			p.Branch, p.Worktree = wb.s.worktreeBranch(id)
+			p.Worktree = tildePath(p.Worktree)
 			if err == nil && p.Item.Transcript != "" {
 				if turns, _, terr := readTranscript(p.Item.Harness, p.Item.Transcript); terr == nil {
 					p.Turns = renderTurns(turns)
@@ -290,8 +425,28 @@ func (wb *web) page(view string) http.HandlerFunc {
 			reply(w, err, nil)
 			return
 		}
+		if view == "panel" {
+			wb.renderFragment(w, "panel", "task-panel", p)
+			return
+		}
 		wb.render(w, view, p)
 	}
+}
+
+func (wb *web) renderFragment(w http.ResponseWriter, file, name string, data any) {
+	var buf bytes.Buffer
+	t, err := wb.tmpl(file)
+	if err == nil {
+		err = t.ExecuteTemplate(&buf, name, data)
+	}
+	if err != nil {
+		log.Print("web: ", err)
+		http.Error(w, "template error: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	buf.WriteTo(w)
 }
 
 func (wb *web) itemExtras(p *page, proj string, id int) error {
@@ -342,9 +497,19 @@ func (wb *web) itemExtras(p *page, proj string, id int) error {
 func (wb *web) render(w http.ResponseWriter, name string, p page) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	if err := wb.pages[name].ExecuteTemplate(w, "layout", p); err != nil {
-		log.Print("web: ", err)
+	// Render into memory first: a template error half way through would otherwise ship a silently truncated page.
+	var buf bytes.Buffer
+	t, err := wb.tmpl(name)
+	if err == nil {
+		err = t.ExecuteTemplate(&buf, "layout", p)
 	}
+	if err != nil {
+		log.Print("web: ", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, "<!doctype html><pre>template error:\n%s</pre>", template.HTMLEscapeString(err.Error()))
+		return
+	}
+	buf.WriteTo(w)
 }
 
 func (wb *web) sse(w http.ResponseWriter, r *http.Request) {
@@ -364,6 +529,10 @@ func (wb *web) sse(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case p := <-ch:
+			if p == reloadEvent {
+				fmt.Fprint(w, "event: reload\ndata: web\n\n")
+				break
+			}
 			fmt.Fprintf(w, "event: change-%s\ndata: %s\n\nevent: change\ndata: %s\n\n", p, p, p)
 		case <-ping.C:
 			fmt.Fprint(w, ": ping\n\n")
@@ -531,4 +700,83 @@ func (s *store) watch(h *hub) error {
 		}
 	}()
 	return nil
+}
+
+// reloadEvent travels through the project change hub; project ids never contain a NUL byte.
+const reloadEvent = "\x00reload"
+
+// watchWeb tells open pages to reload when anything under the dev web directory changes.
+func (wb *web) watchWeb(dir string) error {
+	w, err := fsnotify.NewWatcher()
+	if err != nil {
+		return err
+	}
+	filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err == nil && d.IsDir() {
+			w.Add(path)
+		}
+		return nil
+	})
+	go func() {
+		var fire <-chan time.Time
+		for {
+			select {
+			case e := <-w.Events:
+				if fi, err := os.Stat(e.Name); err == nil && fi.IsDir() && e.Has(fsnotify.Create) {
+					w.Add(e.Name)
+				}
+				if fire == nil {
+					fire = time.After(100 * time.Millisecond)
+				}
+			case <-fire:
+				fire = nil
+				wb.hub.publish(reloadEvent)
+			case err := <-w.Errors:
+				log.Print("web watch: ", err)
+			}
+		}
+	}()
+	return nil
+}
+
+const viteDevServer = "http://127.0.0.1:5173"
+
+// assetTags links the client's scripts and styles: from the Vite dev server in dev mode, from the build manifest otherwise.
+func (wb *web) assetTags() template.HTML {
+	if wb.dev {
+		return template.HTML(`<script type="module" src="` + viteDevServer + `/static/@vite/client"></script>` +
+			`<script type="module" src="` + viteDevServer + `/static/src/main.ts"></script>`)
+	}
+	raw, err := fs.ReadFile(wb.files, "dist/.vite/manifest.json")
+	var manifest map[string]struct {
+		File string   `json:"file"`
+		CSS  []string `json:"css"`
+	}
+	if err == nil {
+		err = json.Unmarshal(raw, &manifest)
+	}
+	entry, ok := manifest["src/main.ts"]
+	if err != nil || !ok {
+		log.Print("web: no Vite build found, run just build: ", err)
+		return ""
+	}
+	var b strings.Builder
+	for _, css := range entry.CSS {
+		fmt.Fprintf(&b, `<link rel="stylesheet" href="/static/%s">`, css)
+	}
+	fmt.Fprintf(&b, `<script type="module" src="/static/%s"></script>`, entry.File)
+	return template.HTML(b.String())
+}
+
+var htmlTag = regexp.MustCompile(`<[^>]*>`)
+
+// taskText splits a task into its title (the first line, inline markdown, heading marks dropped) and a markdown description.
+func taskText(content string) (title template.HTML, plain string, description template.HTML) {
+	first, rest, _ := strings.Cut(strings.TrimSpace(content), "\n")
+	var b bytes.Buffer
+	markdown.Convert([]byte(strings.TrimLeft(first, "# ")), &b)
+	inline := strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(b.String()), "<p>"), "</p>")
+	b.Reset()
+	markdown.Convert([]byte(strings.TrimSpace(rest)), &b)
+	return template.HTML(inline), html.UnescapeString(htmlTag.ReplaceAllString(inline, "")), template.HTML(b.String())
 }

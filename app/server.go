@@ -19,10 +19,18 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
+type projectView struct {
+	ID   string `yaml:"id"`
+	Name string `yaml:"name"`
+	Repo string `yaml:"repo"`
+}
+
 type boardView struct {
-	Project string       `yaml:"project"`
-	Repo    string       `yaml:"repo"`
-	Columns []columnView `yaml:"columns"`
+	Project       string       `yaml:"project"`
+	Name          string       `yaml:"name"`
+	Personalities []string     `yaml:"personalities,omitempty"`
+	Repo          string       `yaml:"repo"`
+	Columns       []columnView `yaml:"columns"`
 }
 
 type columnView struct {
@@ -32,12 +40,16 @@ type columnView struct {
 }
 
 type cardView struct {
-	ID        int    `yaml:"id"`
-	Line      string `yaml:"line"`
-	Status    string `yaml:"status"`
-	Attention string `yaml:"attention,omitempty"`
-	Live      bool   `yaml:"live,omitempty"`
-	Tokens    string `yaml:"tokens,omitempty"`
+	ID          int      `yaml:"id"`
+	Line        string   `yaml:"line"`
+	Status      string   `yaml:"status"`
+	Attention   string   `yaml:"attention,omitempty"`
+	Live        bool     `yaml:"live,omitempty"`
+	Tokens      string   `yaml:"tokens,omitempty"`
+	Personality string   `yaml:"personality,omitempty"`
+	Tags        []string `yaml:"tags,omitempty"`
+	Branch      string   `yaml:"branch,omitempty"`
+	Worktree    string   `yaml:"worktree,omitempty"`
 }
 
 func tokens(context, output int) string {
@@ -75,12 +87,12 @@ func serve(home, addr, tmuxName string) error {
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return err
 	}
-	lock, err := os.OpenFile(filepath.Join(home, "kanban.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	lock, err := os.OpenFile(filepath.Join(home, "kk.lock"), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return err
 	}
 	if syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil {
-		fmt.Print("kanban server already running\n")
+		fmt.Print("kk server already running\n")
 		return call(home, []string{"server"}, nil)
 	}
 	removeInterruptedWrites(home)
@@ -88,7 +100,7 @@ func serve(home, addr, tmuxName string) error {
 	if err != nil {
 		return err
 	}
-	sock := filepath.Join(home, "kanban.sock")
+	sock := filepath.Join(home, "kk.sock")
 	os.Remove(sock)
 	unixLn, err := net.Listen("unix", sock)
 	if err != nil {
@@ -124,7 +136,7 @@ func serve(home, addr, tmuxName string) error {
 	errc := make(chan error, 2)
 	go func() { errc <- http.Serve(unixLn, h) }()
 	go func() { errc <- http.Serve(tcpLn, wb.handler(h)) }()
-	fmt.Printf("kanban server pid %d, socket %s\nweb: %s\n", os.Getpid(), sock, s.url)
+	fmt.Printf("kk server pid %d, socket %s\nweb: %s\n", os.Getpid(), sock, s.url)
 	return <-errc
 }
 
@@ -218,16 +230,31 @@ func dispatch(s *store, q query, r *http.Request) (any, error) {
 		b, err := s.projectRaw(name)
 		return raw(b), err
 	case q.ids["project"] == "" && q.verb == "":
-		return s.projects()
-	case q.ids["project"] == "" && q.verb == "new" && len(q.args) == 1:
-		repo := r.Header.Get("Kanban-Cwd")
-		if repo == "" {
-			return nil, badRequest("project new needs the repo directory in the Kanban-Cwd header")
+		projs, err := s.projects()
+		list := []projectView{}
+		for _, id := range projs {
+			p, _, _ := s.board(id)
+			list = append(list, projectView{ID: id, Name: s.projectName(id), Repo: p.Repo})
 		}
-		if err := s.createProject(q.args[0], repo); err != nil {
+		return list, err
+	case q.ids["project"] == "" && q.verb == "new" && len(q.args) > 0:
+		return nil, badRequest("projects are identified by their repository path: run kk project new inside the repository")
+	case q.ids["project"] == "" && q.verb == "new" && len(q.args) == 0:
+		// The CLI sends its working directory; the web client sends project.yaml with the repo path.
+		req := struct {
+			Repo    string `yaml:"repo"`
+			GitInit *bool  `yaml:"git_init"`
+		}{Repo: r.Header.Get("Kk-Cwd")}
+		if len(strings.TrimSpace(string(body))) > 0 {
+			if err := yaml.Unmarshal(body, &req); err != nil {
+				return nil, badRequest("project.yaml: %v", err)
+			}
+		}
+		id, err := s.createProject(req.Repo, req.GitInit)
+		if err != nil {
 			return nil, err
 		}
-		return boardOf(s, q.args[0])
+		return boardOf(s, id)
 	case q.ids["project"] != "" && q.verb == "":
 		name, err := s.resolveProject(q.ids["project"])
 		if err != nil {
@@ -243,18 +270,21 @@ func dispatch(s *store, q query, r *http.Request) (any, error) {
 
 func dispatchItem(s *store, q query, body []byte) (any, error) {
 	if q.ids["item"] == "" {
-		if q.verb != "new" || len(q.args) > 1 {
+		if q.verb != "new" || len(q.args) > 2 {
 			return nil, badRequest("item needs an id")
 		}
 		proj, err := s.resolveProject(q.ids["project"])
 		if err != nil {
 			return nil, err
 		}
-		col := ""
-		if len(q.args) == 1 {
+		col, pers := "", ""
+		if len(q.args) > 0 {
 			col = q.args[0]
 		}
-		return s.createItem(proj, col, body)
+		if len(q.args) > 1 {
+			pers = q.args[1]
+		}
+		return s.createItem(proj, col, pers, body)
 	}
 	id, err := strconv.Atoi(q.ids["item"])
 	if err != nil {
@@ -299,6 +329,14 @@ func dispatchItem(s *store, q query, body []byte) (any, error) {
 		return s.suggestions(proj, id)
 	case q.verb == "accept" && len(q.args) == 1:
 		return s.accept(proj, id, q.args[0])
+	case q.verb == "personality" && len(q.args) <= 1:
+		name := ""
+		if len(q.args) == 1 {
+			name = q.args[0]
+		}
+		return s.setPersonality(proj, id, name)
+	case (q.verb == "tag" || q.verb == "untag") && len(q.args) == 1:
+		return s.tag(proj, id, q.args[0], q.verb == "tag")
 	case q.verb == "attach" && len(q.args) == 0:
 		if err := s.ensureSession(proj, id); err != nil {
 			return nil, err
@@ -317,7 +355,10 @@ func boardOf(s *store, proj string) (boardView, error) {
 	if err != nil {
 		return boardView{}, err
 	}
-	v := boardView{Project: proj, Repo: p.Repo}
+	v := boardView{Project: proj, Name: s.projectName(proj), Repo: p.Repo}
+	for _, pers := range b.Personalities {
+		v.Personalities = append(v.Personalities, pers.Name)
+	}
 	byColumn := map[string][]cardView{}
 	for _, id := range ids {
 		it, err := s.item(proj, id)
@@ -326,7 +367,11 @@ func boardOf(s *store, proj string) (boardView, error) {
 		}
 		line, _, _ := strings.Cut(strings.TrimSpace(it.Content), "\n")
 		byColumn[it.Column] = append(byColumn[it.Column], cardView{ID: id, Line: line, Status: it.Status, Attention: it.Attention,
-			Live: it.Status == "running" && it.Live != "", Tokens: tokens(it.Context, it.Output)})
+			Live: it.Status == "running" && it.Live != "", Tokens: tokens(it.Context, it.Output), Personality: it.Personality, Tags: it.Tags})
+		card := &byColumn[it.Column][len(byColumn[it.Column])-1]
+		if dir, branch := s.worktreeBranch(id); dir != "" {
+			card.Branch, card.Worktree = branch, tildePath(dir)
+		}
 	}
 	for _, c := range b.Columns {
 		items := byColumn[c.Name]
@@ -368,4 +413,13 @@ func reply(w http.ResponseWriter, err error, v any) {
 		return
 	}
 	yaml.NewEncoder(w).Encode(v)
+}
+
+func tildePath(path string) string {
+	if home, err := os.UserHomeDir(); err == nil {
+		if rest, ok := strings.CutPrefix(path, home+string(filepath.Separator)); ok {
+			return "~/" + rest
+		}
+	}
+	return path
 }

@@ -32,7 +32,7 @@ func TestDefaultBoardAndTaskFiles(t *testing.T) {
 			}
 		}
 	}
-	if !strings.Contains(b.Setup.Generate, "#!/usr/bin/env bash.\" > \"$KANBAN_SETUP\"") || !strings.Contains(b.Suggest.Command, "content field") {
+	if !strings.Contains(b.Setup.Generate, "#!/usr/bin/env bash.\" > \"$KK_SETUP\"") || !strings.Contains(b.Suggest.Command, "content field") {
 		t.Fatalf("default commands are cut short:\n%q\n%q", b.Setup.Generate, b.Suggest.Command)
 	}
 	for _, c := range commands {
@@ -51,7 +51,7 @@ func TestDefaultBoardAndTaskFiles(t *testing.T) {
 		t.Fatalf("default board does not pass validation: %v\n%s", err, b)
 	}
 
-	h.project("demo", "columns:\n  - name: work\n    steps:\n      - shell: printf '# Plan\\n\\nShip **it**\\n' > \"$KANBAN_TASK_DIR/PLAN.md\"\n")
+	h.project("demo", "columns:\n  - name: work\n    steps:\n      - shell: printf '# Plan\\n\\nShip **it**\\n' > \"$KK_TASK_DIR/PLAN.md\"\n")
 	id := h.newItem("work", "Write a plan\n")
 	h.waitItem(id, "status: done")
 	_, page := h.get(h.browser(), "/ui/demo/item/"+id)
@@ -77,12 +77,12 @@ func TestSetupScriptGeneration(t *testing.T) {
 	h := newHarness(t)
 	h.start()
 	board := `setup:
-  generate: printf 'Here is the script:\n\nFENCEbash\necho ran > "$KANBAN_TASK_DIR/setup.txt"\nFENCE\n\n- **Note:** nothing is pinned.\n' > "$KANBAN_SETUP"
+  generate: printf 'Here is the script:\n\nFENCEbash\necho ran > "$KK_TASK_DIR/setup.txt"\nFENCE\n\n- **Note:** nothing is pinned.\n' > "$KK_SETUP"
 columns:
   - name: work
     steps:
       - setup: true
-      - shell: test -f "$KANBAN_TASK_DIR/setup.txt"
+      - shell: test -f "$KK_TASK_DIR/setup.txt"
 `
 	h.project("demo", strings.ReplaceAll(board, "FENCE", "```"))
 	first := h.newItem("work", "Needs deps\n")
@@ -96,7 +96,7 @@ columns:
 	if strings.Contains(string(b), "```") || strings.Contains(string(b), "Note") || fi.Mode()&0o100 == 0 {
 		t.Fatalf("setup script not cleaned or not executable (%v):\n%s", fi.Mode(), b)
 	}
-	os.WriteFile(script, []byte("#!/bin/sh\necho ran > \"$KANBAN_TASK_DIR/setup.txt\"\n"), 0o644)
+	os.WriteFile(script, []byte("#!/bin/sh\necho ran > \"$KK_TASK_DIR/setup.txt\"\n"), 0o644)
 	os.Chmod(script, 0o644)
 	second := h.newItem("work", "Reuses deps\n")
 	h.waitItem(second, "step: 2", "status: done")
@@ -153,7 +153,7 @@ func TestHistoryAndUndo(t *testing.T) {
 		return strings.Contains(hist, "projects/demo/items/"+id+".md")
 	}, "first commit")
 	tracked, _ := exec.Command("git", "-C", h.home, "ls-files").Output()
-	for _, secret := range []string{"token", "kanban.sock", "hooks/"} {
+	for _, secret := range []string{"token", "kk.sock", "hooks/"} {
 		if strings.Contains(string(tracked), secret) {
 			t.Fatalf("%s is tracked:\n%s", secret, tracked)
 		}
@@ -205,7 +205,7 @@ func TestGraphAndSuggestions(t *testing.T) {
 	h.project("demo", `suggest:
   to: work
   command: |
-    grep -q "Root task" "$KANBAN_FAMILY_FILE" && printf -- '- content: Write docs for %s\n- content: Add metrics\n' "$KANBAN_TASK" > "$KANBAN_SUGGESTIONS"
+    grep -q "Root task" "$KK_FAMILY_FILE" && printf -- '- content: Write docs for %s\n- content: Add metrics\n' "$KK_TASK" > "$KK_SUGGESTIONS"
 columns:
   - name: backlog
     steps: []
@@ -264,7 +264,7 @@ columns:
 func TestFailedSetupGenerationLeavesNoScript(t *testing.T) {
 	h := newHarness(t)
 	h.start()
-	h.project("demo", "setup:\n  generate: |\n    : > \"$KANBAN_SETUP\"; exit 1\ncolumns:\n  - name: work\n    steps:\n      - setup: true\n")
+	h.project("demo", "setup:\n  generate: |\n    : > \"$KK_SETUP\"; exit 1\ncolumns:\n  - name: work\n    steps:\n      - setup: true\n")
 	id := h.newItem("work", "Generator breaks\n")
 	h.waitItem(id, "status: waiting", "No setup script")
 	h.run("", "item", id, "approve")

@@ -140,7 +140,7 @@ func (s *store) push(proj string, id int, e event) {
 		base = s.base
 	}
 	it, _ := s.item(proj, id)
-	title := "#" + strconv.Itoa(id) + " " + proj + ": " + firstLine(it.Content)
+	title := "#" + strconv.Itoa(id) + " " + s.projectName(proj) + ": " + firstLine(it.Content)
 	go func() {
 		req, err := http.NewRequest("POST", cfg.Ntfy, bytes.NewBufferString(e.Message))
 		if err != nil {

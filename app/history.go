@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const gitignore = "kanban.sock\nkanban.lock\ntoken\nhooks/\nworktrees/\n.tmp-*\n"
+const gitignore = "kk.sock\nkk.lock\ntoken\nhooks/\nworktrees/\n.tmp-*\n"
 
 var commitHash = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
 
@@ -24,7 +24,7 @@ type commit struct {
 }
 
 func (s *store) git(args ...string) (string, error) {
-	base := []string{"-C", s.home, "-c", "user.name=kanban", "-c", "user.email=kanban@localhost", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"}
+	base := []string{"-C", s.home, "-c", "user.name=kk", "-c", "user.email=kk@localhost", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"}
 	out, err := exec.Command("git", append(base, args...)...).CombinedOutput()
 	if err != nil {
 		return string(out), fmt.Errorf("git %s: %w: %s", args[0], err, strings.TrimSpace(string(out)))

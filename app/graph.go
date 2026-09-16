@@ -20,6 +20,7 @@ import (
 type node struct {
 	ID       int    `yaml:"id"`
 	Project  string `yaml:"project"`
+	Name     string `yaml:"name"`
 	Line     string `yaml:"line"`
 	Column   string `yaml:"column"`
 	Status   string `yaml:"status"`
@@ -136,7 +137,7 @@ func (s *store) graph(proj string) (graphView, error) {
 	}
 	for id := range shown {
 		it := all[id]
-		v.Nodes = append(v.Nodes, node{ID: id, Project: it.Project, Line: firstLine(it.Content), Column: it.Column, Status: it.Status, External: !in[id], Depth: walk(id, map[int]bool{})})
+		v.Nodes = append(v.Nodes, node{ID: id, Project: it.Project, Name: s.projectName(it.Project), Line: firstLine(it.Content), Column: it.Column, Status: it.Status, External: !in[id], Depth: walk(id, map[int]bool{})})
 	}
 	slices.SortFunc(v.Nodes, func(a, b node) int { return (a.Depth-b.Depth)*1_000_000 + a.ID - b.ID })
 	slices.SortFunc(v.Edges, func(a, b edge) int { return (a.Child-b.Child)*1_000_000 + a.Parent - b.Parent })
@@ -200,7 +201,7 @@ func graphSVG(g graphView) string {
 		fmt.Fprintf(&b, `<text x="%d" y="%d" class="title">#%d %s</text>`, p[0]+10, p[1]+19, n.ID, html.EscapeString(line))
 		meta := n.Column + " · " + n.Status
 		if n.External {
-			meta = n.Project + " · " + meta
+			meta = n.Name + " · " + meta
 		}
 		fmt.Fprintf(&b, `<text x="%d" y="%d" class="meta">%s</text></g></a>`, p[0]+10, p[1]+36, html.EscapeString(meta))
 	}
@@ -294,8 +295,8 @@ func (s *store) suggest(proj string, id int) (map[string]string, error) {
 		defer cancel()
 		cmd := exec.CommandContext(ctx, "sh", "-c", b.Suggest.Command)
 		cmd.Dir = p.Repo
-		cmd.Env = append(os.Environ(), "KANBAN_HOME="+s.home, "KANBAN_TASK="+strconv.Itoa(id), "KANBAN_PROJECT="+proj, "KANBAN_REPO="+p.Repo,
-			"KANBAN_FAMILY_FILE="+familyFile, "KANBAN_SUGGESTIONS="+out)
+		cmd.Env = append(os.Environ(), "KK_HOME="+s.home, "KK_TASK="+strconv.Itoa(id), "KK_PROJECT="+proj, "KK_REPO="+p.Repo,
+			"KK_FAMILY_FILE="+familyFile, "KK_SUGGESTIONS="+out)
 		output, runErr := cmd.CombinedOutput()
 		e := event{Event: "suggested"}
 		list, err := s.suggestions(proj, id)
@@ -349,7 +350,7 @@ func (s *store) accept(proj string, id int, nArg string) (item, error) {
 	if n < 1 || n > len(list) {
 		return item{}, badRequest("item %d has %d suggestions, no number %d", id, len(list), n)
 	}
-	child, err := s.createItem(proj, b.Suggest.To, []byte(list[n-1].Content))
+	child, err := s.createItem(proj, b.Suggest.To, "", []byte(list[n-1].Content))
 	if err != nil {
 		return item{}, err
 	}

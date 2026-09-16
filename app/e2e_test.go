@@ -22,7 +22,7 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	dir := t.TempDir()
-	h := &harness{t: t, bin: filepath.Join(dir, "kanban"), home: filepath.Join(dir, "home"), repo: filepath.Join(dir, "repo")}
+	h := &harness{t: t, bin: filepath.Join(dir, "kk"), home: filepath.Join(dir, "home"), repo: filepath.Join(dir, "repo")}
 	if out, err := exec.Command("go", "build", "-o", h.bin, ".").CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
@@ -30,8 +30,8 @@ func newHarness(t *testing.T) *harness {
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
 	h.addr = ln.Addr().String()
 	ln.Close()
-	tmux := fmt.Sprintf("kanban-test-%d-%d", os.Getpid(), time.Now().UnixNano())
-	h.env = append(os.Environ(), "KANBAN_HOME="+h.home, "KANBAN_ADDR="+h.addr, "KANBAN_TMUX="+tmux)
+	tmux := fmt.Sprintf("kk-test-%d-%d", os.Getpid(), time.Now().UnixNano())
+	h.env = append(os.Environ(), "KK_HOME="+h.home, "KK_ADDR="+h.addr, "KK_TMUX="+tmux)
 	t.Cleanup(func() {
 		h.stop()
 		sock, _ := exec.Command("tmux", "-L", tmux, "display", "-p", "#{socket_path}").Output()
@@ -45,7 +45,7 @@ func newHarness(t *testing.T) *harness {
 
 func (h *harness) start() {
 	h.t.Helper()
-	os.Remove(filepath.Join(h.home, "kanban.sock"))
+	os.Remove(filepath.Join(h.home, "kk.sock"))
 	h.server = exec.Command(h.bin)
 	h.server.Env = h.env
 	if err := h.server.Start(); err != nil {
@@ -140,7 +140,7 @@ func TestEndToEnd(t *testing.T) {
 			}
 		case <-time.After(5 * time.Second):
 			cmd.Process.Kill()
-			t.Fatalf("kanban %v hung on an open stdin socket", args)
+			t.Fatalf("kk %v hung on an open stdin socket", args)
 		}
 	}
 	os.WriteFile(filepath.Join(home, "projects", "demo", "board.yaml"), []byte("columns:\n  - name: backlog\n    steps: []\n  - name: todo\n    steps: []\n  - name: doing\n    steps: []\n  - name: done\n    steps: []\n"), 0o644)

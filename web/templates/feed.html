@@ -7,8 +7,8 @@
       {{range .Feed.Open}}
       <li class="entry">
         <div class="entry-head">
-          <a href="/ui/{{.Project}}/item/{{.ID}}" class="entry-title">#{{.ID}} {{.Line}}</a>
-          <span class="muted">{{.Project}} · {{.Column}} · waiting {{.Waiting}}</span>
+          <a href="/ui/{{.Project}}/item/{{.ID}}" class="entry-title"><span class="mono">#{{.ID}}</span> {{.Line}}</a>
+          <span class="muted">{{pname .Project}} · {{.Column}} · waiting {{.Waiting}}</span>
         </div>
         <p class="flag entry-flag">{{.Attention}}</p>
         <div class="actions">
@@ -33,7 +33,7 @@
       {{range .Feed.Recent}}
       <li{{if not .Open}} class="resolved"{{end}}>
         <time>{{ago .At}}</time>
-        <span><b>{{.Event}}</b> <a href="/ui/{{.Project}}/item/{{.ID}}">#{{.ID}} {{.Line}}</a> <span class="muted">{{.Project}}</span> · {{.Message}}</span>
+        <span><b>{{.Event}}</b> <a href="/ui/{{.Project}}/item/{{.ID}}"><span class="mono">#{{.ID}}</span> {{.Line}}</a> <span class="muted">{{pname .Project}}</span> · {{.Message}}</span>
       </li>
       {{end}}
     </ol>

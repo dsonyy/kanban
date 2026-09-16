@@ -2,11 +2,15 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -43,6 +47,23 @@ type store struct {
 
 type project struct {
 	Repo string `yaml:"repo"`
+}
+
+// personality is how a task's agent steps run: which harness, which model, and a prompt put in front of each step's prompt.
+type personality struct {
+	Name    string `yaml:"name"`
+	Harness string `yaml:"harness"`
+	Model   string `yaml:"model,omitempty"`
+	Prompt  string `yaml:"prompt,omitempty"`
+}
+
+func (b board) personality(name string) (personality, bool) {
+	for _, p := range b.Personalities {
+		if p.Name == name {
+			return p, true
+		}
+	}
+	return personality{}, false
 }
 
 type column struct {
@@ -86,7 +107,8 @@ type board struct {
 	Setup struct {
 		Generate string `yaml:"generate,omitempty"`
 	} `yaml:"setup,omitempty"`
-	Suggest struct {
+	Personalities []personality `yaml:"personalities,omitempty"`
+	Suggest       struct {
 		To      string `yaml:"to,omitempty"`
 		Command string `yaml:"command,omitempty"`
 	} `yaml:"suggest,omitempty"`
@@ -115,12 +137,14 @@ type itemState struct {
 	Loops       map[string]int `yaml:"loops,omitempty"`
 	Parents     []int          `yaml:"parents,omitempty"`
 	SessionSeen bool           `yaml:"session_seen,omitempty"`
+	Personality string         `yaml:"personality,omitempty"`
+	Tags        []string       `yaml:"tags,omitempty"`
 }
 
 func (st *itemState) enter(col string) {
 	*st = itemState{Column: col, Created: st.Created, Status: "pending", Ran: col,
 		Harness: st.Harness, Session: st.Session, Transcript: st.Transcript, Context: st.Context, Output: st.Output,
-		Loops: st.Loops, Parents: st.Parents}
+		Loops: st.Loops, Parents: st.Parents, Personality: st.Personality, Tags: st.Tags}
 }
 
 type event struct {
@@ -138,21 +162,23 @@ type event struct {
 }
 
 type item struct {
-	ID         int       `yaml:"id"`
-	Project    string    `yaml:"project"`
-	Column     string    `yaml:"column"`
-	Step       int       `yaml:"step"`
-	Status     string    `yaml:"status"`
-	Attention  string    `yaml:"attention,omitempty"`
-	Harness    string    `yaml:"harness,omitempty"`
-	Session    string    `yaml:"session,omitempty"`
-	Transcript string    `yaml:"transcript,omitempty"`
-	Context    int       `yaml:"context,omitempty"`
-	Output     int       `yaml:"output,omitempty"`
-	Live       string    `yaml:"step_harness,omitempty"`
-	Parents    []int     `yaml:"parents,omitempty"`
-	Created    time.Time `yaml:"created"`
-	Content    string    `yaml:"content"`
+	ID          int       `yaml:"id"`
+	Project     string    `yaml:"project"`
+	Column      string    `yaml:"column"`
+	Step        int       `yaml:"step"`
+	Status      string    `yaml:"status"`
+	Attention   string    `yaml:"attention,omitempty"`
+	Harness     string    `yaml:"harness,omitempty"`
+	Session     string    `yaml:"session,omitempty"`
+	Transcript  string    `yaml:"transcript,omitempty"`
+	Context     int       `yaml:"context,omitempty"`
+	Output      int       `yaml:"output,omitempty"`
+	Live        string    `yaml:"step_harness,omitempty"`
+	Parents     []int     `yaml:"parents,omitempty"`
+	Personality string    `yaml:"personality,omitempty"`
+	Tags        []string  `yaml:"tags,omitempty"`
+	Created     time.Time `yaml:"created"`
+	Content     string    `yaml:"content"`
 }
 
 type config struct {
@@ -223,37 +249,104 @@ func (s *store) projects() ([]string, error) {
 	}
 	return sortedUnique(names), nil
 }
-func (s *store) createProject(name, repo string) error {
-	if !validName.MatchString(name) || reserved(name) {
-		return badRequest("invalid project name %q", name)
+
+const notGitRepo = "is not a git repository"
+
+var nonSlug = regexp.MustCompile(`[^a-z0-9_-]+`)
+
+// projectID names a project's data directory and URL. A project is identified by its repository path,
+// so the id carries a hash of the path; the folder name in front only keeps the id readable.
+func projectID(repo string) string {
+	slug := strings.Trim(nonSlug.ReplaceAllString(strings.ToLower(filepath.Base(repo)), "-"), "-_")
+	if slug == "" {
+		slug = "project"
+	}
+	sum := sha256.Sum256([]byte(repo))
+	return slug + "-" + hex.EncodeToString(sum[:3])
+}
+
+// projectName is what people see: the repository folder name.
+func (s *store) projectName(id string) string {
+	if e := s.get(projectRel(id, "project.yaml")); e != nil && e.project.Repo != "" {
+		return filepath.Base(e.project.Repo)
+	}
+	return id
+}
+
+// gitInit nil refuses a folder without git, true runs git init, false creates the project without git.
+func (s *store) createProject(path string, gitInit *bool) (string, error) {
+	repo, err := repoDir(path)
+	if err != nil {
+		return "", err
+	}
+	if real, err := filepath.EvalSymlinks(repo); err == nil {
+		repo = real
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, err := os.Stat(s.projectDir(name)); err == nil || s.get(projectRel(name, "project.yaml")) != nil {
-		return badRequest("project %q already exists", name)
+	projs, _ := s.projects()
+	for _, id := range projs {
+		if e := s.get(projectRel(id, "project.yaml")); e != nil && filepath.Clean(e.project.Repo) == repo {
+			return "", badRequest("%s is already the project %q", repo, s.projectName(id))
+		}
 	}
-	if err := os.MkdirAll(filepath.Join(s.projectDir(name), "items"), 0o755); err != nil {
-		return err
+	if gitInit == nil || *gitInit {
+		if exec.Command("git", "-C", repo, "rev-parse", "--git-dir").Run() == nil {
+			gitInit = ptr(false)
+		} else if gitInit == nil {
+			return "", httpError{http.StatusConflict, fmt.Errorf("%s %s", repo, notGitRepo)}
+		}
+	}
+	if *gitInit {
+		if out, err := exec.Command("git", "-C", repo, "init", "-q").CombinedOutput(); err != nil {
+			return "", fmt.Errorf("git init in %s: %v: %s", repo, err, strings.TrimSpace(string(out)))
+		}
+	}
+	id := projectID(repo)
+	if err := os.MkdirAll(filepath.Join(s.projectDir(id), "items"), 0o755); err != nil {
+		return "", err
 	}
 	p, err := yaml.Marshal(project{Repo: repo})
 	if err != nil {
-		return err
+		return "", err
 	}
-	if err := s.write(projectRel(name, "project.yaml"), p, nil); err != nil {
-		return err
+	if err := s.write(projectRel(id, "project.yaml"), p, nil); err != nil {
+		return "", err
 	}
-	if err := s.write(projectRel(name, "board.yaml"), []byte(defaultBoard), nil); err != nil {
-		return err
+	if err := s.write(projectRel(id, "board.yaml"), []byte(defaultBoard), nil); err != nil {
+		return "", err
 	}
-	return s.setLastProject(name)
+	return id, s.setLastProject(id)
 }
+
+func repoDir(path string) (string, error) {
+	if path == "" {
+		return "", badRequest("a project needs a repository: give its path, or run the CLI inside it")
+	}
+	if rest, ok := strings.CutPrefix(path, "~"); ok && (rest == "" || strings.HasPrefix(rest, "/")) {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		path = home + rest
+	}
+	if !filepath.IsAbs(path) {
+		return "", badRequest("repository path %q must be absolute", path)
+	}
+	if fi, err := os.Stat(path); err != nil || !fi.IsDir() {
+		return "", badRequest("repository path %q is not a directory", path)
+	}
+	return filepath.Clean(path), nil
+}
+
 func (s *store) setLastProject(name string) error {
 	return writeYAML(filepath.Join(s.home, "state.yaml"), map[string]string{"project": name})
 }
 
+// resolveProject accepts a project id or, when it is unambiguous, a project's display name.
 func (s *store) resolveProject(name string) (string, error) {
-	if name != "" && !validName.MatchString(name) {
-		return "", badRequest("invalid project name %q", name)
+	if name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
+		return "", badRequest("invalid project %q", name)
 	}
 	if name == "" {
 		var st map[string]string
@@ -262,10 +355,23 @@ func (s *store) resolveProject(name string) (string, error) {
 		}
 		name = st["project"]
 	}
-	if s.get(projectRel(name, "project.yaml")) == nil {
+	if s.get(projectRel(name, "project.yaml")) != nil {
+		return name, nil
+	}
+	projs, _ := s.projects()
+	var matches []string
+	for _, id := range projs {
+		if s.projectName(id) == name {
+			matches = append(matches, id)
+		}
+	}
+	switch len(matches) {
+	case 1:
+		return matches[0], nil
+	case 0:
 		return "", fmt.Errorf("project %q: %w", name, errNotFound)
 	}
-	return name, nil
+	return "", badRequest("%q matches several projects, use one of: %s", name, strings.Join(matches, ", "))
 }
 
 func (s *store) board(proj string) (project, board, error) {
@@ -310,9 +416,9 @@ func (s *store) item(proj string, id int) (item, error) {
 	content := string(rawOf(s.get(itemRel(proj, id, ".md"))))
 	return item{ID: id, Project: proj, Column: st.Column, Step: st.Step, Status: st.Status, Attention: st.Attention,
 		Harness: st.Harness, Session: st.Session, Transcript: st.Transcript, Context: st.Context, Output: st.Output,
-		Live: st.StepHarness, Parents: st.Parents, Created: st.Created, Content: content}, nil
+		Live: st.StepHarness, Parents: st.Parents, Personality: st.Personality, Tags: st.Tags, Created: st.Created, Content: content}, nil
 }
-func (s *store) createItem(proj, col string, content []byte) (item, error) {
+func (s *store) createItem(proj, col, pers string, content []byte) (item, error) {
 	_, b, err := s.board(proj)
 	if err != nil {
 		return item{}, err
@@ -335,7 +441,10 @@ func (s *store) createItem(proj, col string, content []byte) (item, error) {
 	if err != nil {
 		return item{}, err
 	}
-	state, err := yaml.Marshal(itemState{Column: col, Created: now(), Status: "pending", Ran: col})
+	if _, ok := b.personality(pers); pers != "" && !ok {
+		return item{}, fmt.Errorf("personality %q: %w", pers, errNotFound)
+	}
+	state, err := yaml.Marshal(itemState{Column: col, Created: now(), Status: "pending", Ran: col, Personality: pers})
 	if err != nil {
 		return item{}, err
 	}
@@ -555,6 +664,18 @@ func (s *store) saveBoard(proj string, raw []byte) error {
 	if len(b.Columns) == 0 {
 		return badRequest("board.yaml: no columns")
 	}
+	names := map[string]bool{}
+	for _, p := range b.Personalities {
+		switch {
+		case p.Name == "" || strings.ContainsAny(p.Name, "/\\"):
+			return badRequest("board.yaml: personality %q needs a name without slashes", p.Name)
+		case names[p.Name]:
+			return badRequest("board.yaml: personality %q defined twice", p.Name)
+		case p.Harness != "claude" && p.Harness != "codex":
+			return badRequest("board.yaml: personality %q needs harness claude or codex", p.Name)
+		}
+		names[p.Name] = true
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.write(projectRel(proj, "board.yaml"), raw, rawOf(s.get(projectRel(proj, "board.yaml"))))
@@ -704,4 +825,64 @@ func (s *store) hook(name string, id int, body []byte) (map[string]string, error
 		return nil, nil
 	})
 	return map[string]string{"hook": name, "result": result}, err
+}
+
+func (s *store) tag(proj string, id int, name string, add bool) (item, error) {
+	name = strings.TrimSpace(name)
+	if name == "" || strings.ContainsAny(name, "/\\") {
+		return item{}, badRequest("tag %q must be non-empty and without slashes", name)
+	}
+	return s.transition(proj, id, func(st *itemState) (event, error) {
+		has := slices.Contains(st.Tags, name)
+		switch {
+		case add && !has:
+			st.Tags = append(st.Tags, name)
+		case !add && has:
+			st.Tags = slices.DeleteFunc(st.Tags, func(t string) bool { return t == name })
+		}
+		verb := "tagged"
+		if !add {
+			verb = "untagged"
+		}
+		return event{Event: verb, Message: name}, nil
+	})
+}
+
+// worktreeBranch reports the task's worktree and its checked-out branch by reading git's files, without running git.
+func (s *store) worktreeBranch(id int) (worktree, branch string) {
+	dir := s.worktree(id)
+	dotgit, err := os.ReadFile(filepath.Join(dir, ".git"))
+	if err != nil {
+		return "", ""
+	}
+	gitdir, ok := strings.CutPrefix(strings.TrimSpace(string(dotgit)), "gitdir: ")
+	if !ok {
+		return dir, ""
+	}
+	head, _ := os.ReadFile(filepath.Join(gitdir, "HEAD"))
+	branch, ok = strings.CutPrefix(strings.TrimSpace(string(head)), "ref: refs/heads/")
+	if !ok {
+		branch = "detached"
+	}
+	return dir, branch
+}
+
+// setPersonality changes the personality of a task's next agent steps; an empty name returns to the column default.
+func (s *store) setPersonality(proj string, id int, name string) (item, error) {
+	if name != "" {
+		_, b, err := s.board(proj)
+		if err != nil {
+			return item{}, err
+		}
+		if _, ok := b.personality(name); !ok {
+			return item{}, fmt.Errorf("personality %q: %w", name, errNotFound)
+		}
+	}
+	return s.transition(proj, id, func(st *itemState) (event, error) {
+		st.Personality = name
+		if name == "" {
+			return event{Event: "personality", Message: "column default"}, nil
+		}
+		return event{Event: "personality", Message: name}, nil
+	})
 }

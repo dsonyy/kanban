@@ -57,7 +57,7 @@ func (h *harness) tmuxOut(args ...string) (string, error) {
 
 func (h *harness) tmux() string {
 	for _, e := range h.env {
-		if v, ok := strings.CutPrefix(e, "KANBAN_TMUX="); ok {
+		if v, ok := strings.CutPrefix(e, "KK_TMUX="); ok {
 			return v
 		}
 	}
@@ -75,8 +75,8 @@ func TestWorkflow(t *testing.T) {
       - goto: next
   - name: planning
     steps:
-      - shell: mkdir -p "$KANBAN_WORKTREE" && echo setup-ok
-      - agent: printf 'plan for %s port %s project %s\n' "$KANBAN_TASK" "$KANBAN_PORT" "$KANBAN_PROJECT" > PLAN.md && cat "$KANBAN_TASK_FILE" && pwd
+      - shell: mkdir -p "$KK_WORKTREE" && echo setup-ok
+      - agent: printf 'plan for %s port %s project %s\n' "$KK_TASK" "$KK_PORT" "$KK_PROJECT" > PLAN.md && cat "$KK_TASK_FILE" && pwd
       - goto: next
   - name: plan-review
     steps:
@@ -93,7 +93,7 @@ func TestWorkflow(t *testing.T) {
   - name: merge
     steps:
       - human: Merge it
-      - shell: rm -rf "$KANBAN_WORKTREE"
+      - shell: rm -rf "$KK_WORKTREE"
 `)
 	id := h.newItem("backlog", "Add dark mode\n")
 	h.waitItem(id, "column: backlog", "status: done")

@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-var taskSession = regexp.MustCompile(`^kanban-[0-9]+$`)
+var taskSession = regexp.MustCompile(`^kk-[0-9]+$`)
 
 const (
 	maxGotos         = 20
@@ -122,7 +122,7 @@ func (s *store) panes() (map[string]pane, error) {
 	return panes, nil
 }
 
-func sessionName(id int) string { return "kanban-" + strconv.Itoa(id) }
+func sessionName(id int) string { return "kk-" + strconv.Itoa(id) }
 
 func (s *store) worktree(id int) string {
 	return filepath.Join(s.home, "worktrees", strconv.Itoa(id))
@@ -495,6 +495,18 @@ func (s *store) start(proj string, id int, st *itemState, col column, sp step, a
 	if sp.kind() == "agent" {
 		cmd = sp.Agent
 		harness = harnessOf(col, sp)
+		// A task's personality replaces the harness of its agent steps and adds a model and a prompt; raw commands stay raw.
+		if _, b, err := s.board(proj); err == nil && harness != rawHarness && st.Personality != "" {
+			if pers, ok := b.personality(st.Personality); ok {
+				harness = pers.Harness
+				if pers.Model != "" {
+					sp.Args = append([]string{"--model", pers.Model}, sp.Args...)
+				}
+				if pers.Prompt != "" {
+					sp.Agent = pers.Prompt + "\n\n" + sp.Agent
+				}
+			}
+		}
 	}
 	if harness != rawHarness {
 		resume := ""
@@ -523,15 +535,15 @@ func (s *store) start(proj string, id int, st *itemState, col column, sp step, a
 	var paneID string
 	if err == nil {
 		paneID, err = s.tmuxCmd("new-window", "-d", "-t", "="+sessionName(id), "-n", stepWindow, "-c", s.workdir(proj, id), "-P", "-F", "#{pane_id}",
-			"-e", "KANBAN_HOME="+s.home,
-			"-e", "KANBAN_TASK="+strconv.Itoa(id),
-			"-e", "KANBAN_TASK_FILE="+s.itemPath(proj, id, ".md"),
-			"-e", "KANBAN_TASK_DIR="+s.itemPath(proj, id, ".files"),
-			"-e", "KANBAN_SETUP="+s.setupPath(proj),
-			"-e", "KANBAN_PROJECT="+proj,
-			"-e", "KANBAN_REPO="+p.Repo,
-			"-e", "KANBAN_WORKTREE="+s.worktree(id),
-			"-e", "KANBAN_PORT="+strconv.Itoa(20000+id),
+			"-e", "KK_HOME="+s.home,
+			"-e", "KK_TASK="+strconv.Itoa(id),
+			"-e", "KK_TASK_FILE="+s.itemPath(proj, id, ".md"),
+			"-e", "KK_TASK_DIR="+s.itemPath(proj, id, ".files"),
+			"-e", "KK_SETUP="+s.setupPath(proj),
+			"-e", "KK_PROJECT="+proj,
+			"-e", "KK_REPO="+p.Repo,
+			"-e", "KK_WORKTREE="+s.worktree(id),
+			"-e", "KK_PORT="+strconv.Itoa(20000+id),
 			cmd)
 	}
 	if err != nil {

@@ -1,0 +1,30 @@
+{{define "view"}}
+<main class="new-project">
+  <form class="new-project-form" data-new-project>
+    <h1>{{if .Projects}}New project{{else}}No projects yet{{end}}</h1>
+    <p class="muted">A project is a folder on this machine. Its folder name is the project name.</p>
+    <label>Project path
+      <input name="repo" class="mono" placeholder="~/repos/app" required autocomplete="off" spellcheck="false">
+    </label>
+    <div class="path-actions"><button type="button" data-pick-path>Select path</button></div>
+    <div class="box-warn" data-git-init hidden>
+      <p><span data-git-init-path></span> is not a git repository. Tasks run in git worktrees, so the project needs one.</p>
+      <div class="editor-actions">
+        <button type="button" class="primary" data-git-init-confirm>Init with git</button>
+        <button type="button" data-git-init-skip>Skip</button>
+      </div>
+    </div>
+    <div class="editor-actions" data-create><button type="submit" class="primary">Create project</button></div>
+  </form>
+  <div class="picker-overlay" data-picker hidden>
+    <div class="picker">
+      <h1>Choose a project folder</h1>
+      <div data-picker-body></div>
+      <div class="editor-actions">
+        <button type="button" class="primary" data-picker-select>Select this folder</button>
+        <button type="button" data-picker-cancel>Cancel</button>
+      </div>
+    </div>
+  </div>
+</main>
+{{end}}

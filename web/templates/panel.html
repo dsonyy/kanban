@@ -1,0 +1,38 @@
+{{define "task-panel"}}
+<div data-task-data data-id="{{.Item.ID}}" data-content="{{.Item.Content}}" data-tags="{{join .Item.Tags ", "}}" data-personality="{{.Item.Personality}}" data-column="{{.Item.Column}}"></div>
+<div class="md task-content">{{.Content}}</div>
+<hr class="separator">
+<dl class="state">
+  <div><dt>Column</dt><dd>{{.Item.Column}}</dd></div>
+  <div><dt>Status</dt><dd class="status-{{.Item.Status}}">{{.Item.Status}}</dd></div>
+  <div><dt>Waited on you</dt><dd>{{.Waited}}</dd></div>
+  <div><dt>Personality</dt><dd>{{if .Item.Personality}}{{.Item.Personality}}{{else}}<span class="muted">column default</span>{{end}}</dd></div>
+  <div><dt>Tags</dt><dd>{{range .Item.Tags}}<span class="tag">{{.}}</span>{{else}}<span class="muted">none</span>{{end}}</dd></div>
+  <div><dt>Branch</dt><dd>{{if .Branch}}<span class="tag">{{.Branch}}</span>{{else}}<span class="muted">none</span>{{end}}</dd></div>
+  <div><dt>Worktree</dt><dd>{{if .Worktree}}<span class="tag">{{.Worktree}}</span>{{else}}<span class="muted">none</span>{{end}}</dd></div>
+  {{if .Item.Harness}}<div><dt>Session</dt><dd class="mono">{{.Item.Harness}} {{.Item.Session}}</dd></div>{{end}}
+  {{if .Tokens}}<div><dt>Tokens</dt><dd>{{.Tokens}}</dd></div>{{end}}
+</dl>
+{{if .Item.Attention}}<p class="flag block">{{.Item.Attention}}</p>{{end}}
+{{if or (eq .Item.Status "waiting") (eq .Item.Status "failed") (ne .Item.Column "archive")}}
+<div class="actions">
+  {{if eq .Item.Status "waiting"}}<button data-post="/item/{{.Item.ID}}/approve" class="primary">Approve</button>{{end}}
+  {{if eq .Item.Status "failed"}}<button data-post="/item/{{.Item.ID}}/retry" class="primary">Retry</button>{{end}}
+  {{if ne .Item.Column "archive"}}<button data-post="/item/{{.Item.ID}}/archive">Archive</button>{{end}}
+</div>
+{{end}}
+<div class="relations">
+  <p>{{if .Parents}}Parents: {{range .Parents}}<a href="/ui/{{.Project}}/item/{{.ID}}">{{firstline .Content}}</a> {{end}}{{else}}No parents.{{end}}</p>
+  <p>{{if .Children}}Children: {{range .Children}}<a href="/ui/{{.Project}}/item/{{.ID}}">{{firstline .Content}}</a> {{end}}{{else}}No children.{{end}}</p>
+</div>
+<hr class="separator">
+<h2>Events</h2>
+<ol class="events">
+  {{range .Events}}
+  <li>
+    <time>{{ago .At}}</time>
+    <span><b>{{.Event}}</b>{{if .From}} {{.From}} → {{.To}}{{else if .To}} {{.To}}{{end}}{{if .Column}} {{.Column}}{{end}}{{if .Kind}} · {{.Kind}}{{end}}{{with deref .Exit}} · exit {{.}}{{end}}{{if .Took}} · {{.Took}}{{end}}{{if and .Message (ne .Event "failed")}} · {{.Message}}{{end}}</span>
+  </li>
+  {{end}}
+</ol>
+{{end}}

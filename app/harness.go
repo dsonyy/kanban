@@ -17,7 +17,7 @@ const rawHarness = "raw"
 
 var harnesses = map[string]bool{"": true, rawHarness: true, "claude": true, "codex": true}
 
-var hookEvents = []struct{ claude, codex, kanban string }{
+var hookEvents = []struct{ claude, codex, kk string }{
 	{"SessionStart", "SessionStart", "session-start"},
 	{"Stop", "Stop", "stop"},
 	{"Notification", "", "notification"},
@@ -37,7 +37,7 @@ func harnessOf(c column, sp step) string {
 
 func shq(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
-// Double quotes keep $KANBAN_* expansion in prompts written in board.yaml.
+// Double quotes keep $KK_* expansion in prompts written in board.yaml.
 func dq(s string) string {
 	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, "`", "\\`").Replace(s) + `"`
 }
@@ -56,7 +56,7 @@ func (s *store) writeHookSettings() error {
 	}
 	hooks := map[string]any{}
 	for _, h := range hookEvents {
-		entry := map[string]any{"hooks": []map[string]string{{"type": "command", "command": shq(bin) + " hook " + h.kanban}}}
+		entry := map[string]any{"hooks": []map[string]string{{"type": "command", "command": shq(bin) + " hook " + h.kk}}}
 		if h.claude == "PostToolUse" {
 			entry["matcher"] = "*"
 		}
@@ -98,7 +98,7 @@ func (s *store) agentCommand(harness string, sp step, resume string) (cmd, sessi
 		parts := []string{"codex", "--dangerously-bypass-hook-trust"}
 		for _, h := range hookEvents {
 			if h.codex != "" {
-				toml := fmt.Sprintf(`hooks.%s=[{hooks=[{type="command",command=%q}]}]`, h.codex, shq(bin)+" hook "+h.kanban)
+				toml := fmt.Sprintf(`hooks.%s=[{hooks=[{type="command",command=%q}]}]`, h.codex, shq(bin)+" hook "+h.kk)
 				parts = append(parts, "-c", shq(toml))
 			}
 		}

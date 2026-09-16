@@ -15,22 +15,22 @@ import (
 )
 
 func main() {
-	home := os.Getenv("KANBAN_HOME")
+	home := os.Getenv("KK_HOME")
 	if home == "" {
 		dir, err := os.UserHomeDir()
 		if err != nil {
 			fail(err)
 		}
-		home = filepath.Join(dir, "kanban")
+		home = filepath.Join(dir, "kk")
 	}
 	if len(os.Args) == 1 {
-		addr := os.Getenv("KANBAN_ADDR")
+		addr := os.Getenv("KK_ADDR")
 		if addr == "" {
 			addr = "127.0.0.1:7420"
 		}
-		tmuxName := os.Getenv("KANBAN_TMUX")
+		tmuxName := os.Getenv("KK_TMUX")
 		if tmuxName == "" {
-			tmuxName = "kanban"
+			tmuxName = "kk"
 		}
 		if err := serve(home, addr, tmuxName); err != nil {
 			fail(err)
@@ -39,11 +39,11 @@ func main() {
 	}
 	args := os.Args[1:]
 	if args[0] == "hook" && len(args) == 2 {
-		args = append(args, os.Getenv("KANBAN_TASK"))
+		args = append(args, os.Getenv("KK_TASK"))
 	}
 	q, err := parse(args)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "kanban:", err)
+		fmt.Fprintln(os.Stderr, "kk:", err)
 		// Exit code 2 from a Claude Code hook blocks the agent.
 		if args[0] == "hook" {
 			os.Exit(1)
@@ -70,14 +70,14 @@ func call(home string, args []string, body io.Reader) error {
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequest(q.method(), "http://kanban"+q.escapedPath(), body)
+	req, err := http.NewRequest(q.method(), "http://kk"+q.escapedPath(), body)
 	if err != nil {
 		return err
 	}
 	if cwd, err := os.Getwd(); err == nil {
-		req.Header.Set("Kanban-Cwd", cwd)
+		req.Header.Set("Kk-Cwd", cwd)
 	}
-	sock := filepath.Join(home, "kanban.sock")
+	sock := filepath.Join(home, "kk.sock")
 	client := http.Client{Transport: &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", sock)
@@ -114,6 +114,6 @@ func call(home string, args []string, body io.Reader) error {
 }
 
 func fail(err error) {
-	fmt.Fprintln(os.Stderr, "kanban:", err)
+	fmt.Fprintln(os.Stderr, "kk:", err)
 	os.Exit(1)
 }

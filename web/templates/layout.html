@@ -3,26 +3,33 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{if .Project}}{{.Project}} - {{end}}kanban</title>
-<link rel="stylesheet" href="/static/app.css">
-<script type="module" src="/static/app.js"></script>
+<title>{{if .Project}}{{pname .Project}} - {{end}}kk</title>
+{{assets}}
 </head>
-<body class="view-{{.View}}">
+<body class="view-{{.View}}"{{if .Project}} data-project="{{.Project}}"{{end}}{{if dev}} data-dev{{end}}>
 <header class="bar">
   <nav class="tabs projects">
-    {{range .Projects}}<a href="/ui/{{.}}"{{if eq . $.Project}} class="on"{{end}}>{{.}}</a>{{end}}
+    {{range .Projects}}<a href="/ui/{{.}}"{{if eq . $.Project}} class="on"{{end}}>{{pname .}}</a>{{end}}
+    <a href="/ui/new" class="add{{if eq .View "new"}} on{{end}}">+ new project</a>
   </nav>
   {{if .Project}}
   <nav class="tabs views">
     <a href="/ui/{{.Project}}"{{if or (eq .View "board") (eq .View "item")}} class="on"{{end}}>kanban</a>
     <a href="/ui/{{.Project}}/feed"{{if eq .View "feed"}} class="on"{{end}}>feed</a>
     <a href="/ui/{{.Project}}/graph"{{if eq .View "graph"}} class="on"{{end}}>graph</a>
+    <a href="/ui/{{.Project}}/stats"{{if eq .View "stats"}} class="on"{{end}}>stats</a>
     <a href="/ui/{{.Project}}/terminal"{{if eq .View "terminal"}} class="on"{{end}}>terminal</a>
     <a href="/ui/{{.Project}}/settings"{{if eq .View "settings"}} class="on"{{end}}>settings</a>
+    <div class="panel-tab-slot" data-panel-tab-slot hidden><div class="panel-resize" data-panel-resize title="Drag to resize"></div>{{block "panel-tabs" .}}{{end}}</div>
+  </nav>
+  {{else}}
+  <nav class="tabs views" aria-disabled="true">
+    <span class="off">kanban</span><span class="off">feed</span><span class="off">graph</span><span class="off">stats</span><span class="off">terminal</span><span class="off">settings</span>
   </nav>
   {{end}}
 </header>
 {{template "view" .}}
+<footer class="status-bar"></footer>
 <div id="flash" hidden></div>
 </body>
 </html>{{end}}

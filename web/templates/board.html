@@ -1,28 +1,99 @@
 {{define "view"}}
+<div class="workspace">
 <main id="view" class="board" data-sse="change-{{.Project}}">
   {{range .Board.Columns}}
   <section class="column{{if .Missing}} missing{{end}}" data-column="{{.Name}}">
-    <h2><span>{{.Name}}{{if .Missing}} <span class="muted">not in board.yaml</span>{{end}}</span><span class="count">{{len .Items}}</span></h2>
+    <h2>
+      <span class="name">{{.Name}}{{if .Missing}} <span class="muted">not in board.yaml</span>{{end}}</span>
+      <span class="count">{{len .Items}}</span>
+      <button type="button" class="icon-button" data-open-panel="new-task" data-column="{{.Name}}" title="New task" aria-label="New task in {{.Name}}"><i class="icon icon-plus"></i></button>
+      <a class="icon-button" href="/ui/{{$.Project}}/settings?column={{.Name}}" title="Column settings" aria-label="Settings for {{.Name}}"><i class="icon icon-gear"></i></a>
+    </h2>
     <div class="cards">
       {{range .Items}}
       <a class="card status-{{.Status}}{{if .Attention}} attention{{end}}{{if .Live}} live{{end}}" draggable="true" data-id="{{.ID}}" href="/ui/{{$.Project}}/item/{{.ID}}">
         <span class="line">{{.Line}}</span>
-        <span class="meta"><span>#{{.ID}}</span>{{if and (ne .Status "done") (ne .Status "pending")}}<span>{{.Status}}</span>{{end}}</span>
+        {{if .Tags}}<span class="tags">{{range .Tags}}<span class="tag">{{.}}</span>{{end}}</span>{{end}}
+        {{if .Worktree}}<span class="tags">{{if .Branch}}<span class="tag" title="branch">{{.Branch}}</span>{{end}}<span class="tag" title="worktree">{{.Worktree}}</span></span>{{end}}
+        <span class="meta"><span class="mono">#{{.ID}}</span>{{if and (ne .Status "done") (ne .Status "pending")}}<span>{{.Status}}</span>{{end}}</span>
+        {{if .Personality}}<span class="meta personality">{{.Personality}}</span>{{end}}
         {{if and .Live .Tokens}}<span class="meta tokens">{{.Tokens}}</span>{{end}}
         {{if .Attention}}<span class="flag">{{.Attention}}</span>{{end}}
       </a>
       {{end}}
+      {{if not .Missing}}<button type="button" class="add-card" data-open-panel="new-task" data-column="{{.Name}}" title="New task" aria-label="New task in {{.Name}}"><i class="icon icon-plus"></i></button>{{end}}
     </div>
   </section>
   {{end}}
 </main>
-<form class="editor" data-new-item>
-  <textarea name="content" rows="3" placeholder="New task. The first line becomes the card title. Ctrl+Enter to add." required></textarea>
-  <div class="editor-actions">
-    <select name="column" aria-label="Column">
-      {{range .Board.Columns}}<option>{{.Name}}</option>{{end}}
-    </select>
-    <button type="submit">Add task</button>
-  </div>
-</form>
+<aside class="side-panel" data-panel="new-task" hidden>
+  <div class="panel-resize" data-panel-resize title="Drag to resize"></div>
+  <form class="side-panel-body" data-new-item>
+    <div class="field">
+      <span class="field-label">Task</span>
+      <div class="markdown-editor" data-markdown-editor data-placeholder="The first line becomes the card title. Ctrl+Enter to add."></div>
+    </div>
+    <div class="field">
+      <span class="field-label">Tags</span>
+      <div class="tag-input" data-tag-input data-all="{{join .Board.Tags "\n"}}">
+        <input type="text" placeholder="Type to find or create a tag" autocomplete="off" spellcheck="false">
+        <input type="hidden" name="tags">
+        <div class="tag-suggest" hidden></div>
+      </div>
+    </div>
+    <label>Column
+      <select name="column">{{range .Board.Columns}}{{if not .Missing}}<option>{{.Name}}</option>{{end}}{{end}}</select>
+    </label>
+    <label>Personality
+      <select name="personality">
+        <option value="">Column default</option>
+        {{range .Board.Personalities}}<option>{{.}}</option>{{end}}
+      </select>
+    </label>
+    <div class="editor-actions"><button type="submit" class="primary">Add task</button></div>
+  </form>
+</aside>
+<aside class="side-panel" data-panel="task" hidden>
+  <div class="panel-resize" data-panel-resize title="Drag to resize"></div>
+  <div class="side-panel-body" data-tab-body="task"></div>
+  <div class="side-panel-body term-body" data-tab-body="terminal" hidden><div class="term"></div></div>
+  <form class="side-panel-body" data-tab-body="edit" data-edit-task hidden>
+    <div class="field">
+      <span class="field-label">Task</span>
+      <div class="markdown-editor" data-markdown-editor></div>
+    </div>
+    <div class="field">
+      <span class="field-label">Tags</span>
+      <div class="tag-input" data-tag-input data-all="{{join .Board.Tags "\n"}}">
+        <input type="text" placeholder="Type to find or create a tag" autocomplete="off" spellcheck="false">
+        <input type="hidden" name="tags">
+        <div class="tag-suggest" hidden></div>
+      </div>
+    </div>
+    <label>Column
+      <select name="column">{{range .Board.Columns}}{{if not .Missing}}<option>{{.Name}}</option>{{end}}{{end}}</select>
+    </label>
+    <label>Personality
+      <select name="personality">
+        <option value="">Column default</option>
+        {{range .Board.Personalities}}<option>{{.}}</option>{{end}}
+      </select>
+    </label>
+    <div class="editor-actions"><button type="submit" class="primary">Save</button></div>
+  </form>
+</aside>
+</div>
+{{end}}
+
+{{define "panel-tabs"}}
+<div class="panel-tab-group" data-panel-tabs="new-task" hidden>
+  <button type="button" class="tab on">New task</button>
+  <button type="button" class="tab close" data-panel-close="new-task" title="Close" aria-label="Close">×</button>
+</div>
+<div class="panel-tab-group" data-panel-tabs="task" hidden>
+  <button type="button" class="tab" data-panel-tab="task">Task</button>
+  <button type="button" class="tab" data-panel-tab="terminal">Terminal</button>
+  <button type="button" class="tab" data-panel-tab="edit">Edit</button>
+  <button type="button" class="tab close" data-panel-close="task" title="Close" aria-label="Close">×</button>
+</div>
 {{end}}

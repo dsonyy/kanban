@@ -1,0 +1,8 @@
+{{define "dirs"}}
+<div class="picker-current" data-picker-current="{{.Path}}">{{.Path}}{{if .Git}}<span class="tag">git</span>{{end}}</div>
+<ul class="picker-list">
+  {{if .Parent}}<li><button type="button" data-dir="{{.Parent}}"><span class="dir-name">..</span></button></li>{{end}}
+  {{range .Dirs}}<li><button type="button" data-dir="{{.Path}}"><span class="dir-name">{{.Name}}/{{if .Git}}<span class="tag">git</span>{{end}}</span><time>{{.Modified}}</time></button></li>{{end}}
+  {{if not .Dirs}}<li class="muted">No folders here.</li>{{end}}
+</ul>
+{{end}}

@@ -71,7 +71,7 @@ func TestWebPagesAndAuth(t *testing.T) {
 	if code != 200 || !strings.Contains(body, `data-column="work"`) || !strings.Contains(body, "Render me on the board") {
 		t.Fatalf("home did not land on the board: %d\n%s", code, body)
 	}
-	for _, path := range []string{"/ui/demo/item/" + id, "/ui/demo/terminal", "/ui/demo/settings", "/static/app.js", "/static/ghostty-vt.wasm"} {
+	for _, path := range []string{"/ui/demo/item/" + id, "/ui/demo/terminal", "/ui/demo/settings", "/static/app.js", "/static/vendor/ghostty-web/ghostty-web.js"} {
 		if code, body := h.get(c, path); code != 200 {
 			t.Fatalf("%s: %d\n%s", path, code, body)
 		}
@@ -183,7 +183,7 @@ func TestTerminalWebSocket(t *testing.T) {
 		}
 		seen.Write(data)
 	}
-	size, err := h.tmuxOut("list-windows", "-t", "=kanban-"+id, "-F", "#{window_width}x#{window_height}")
+	size, err := h.tmuxOut("list-windows", "-t", "=kk-"+id, "-F", "#{window_width}x#{window_height}")
 	if err != nil || !strings.HasPrefix(size, "100x") {
 		t.Fatalf("resize not applied: %q %v", size, err)
 	}
@@ -299,4 +299,42 @@ func TestCookieWritesRequireSameOrigin(t *testing.T) {
 		t.Fatalf("bearer POST without Origin: %v %v", err, resp.Status)
 	}
 	resp.Body.Close()
+}
+
+func TestCreateProjectFromBrowser(t *testing.T) {
+	h := newHarness(t)
+	h.start()
+	c := h.browser()
+
+	code, body := h.get(c, "/")
+	for _, want := range []string{"No projects yet", "data-new-project", `name="repo"`, ">kanban<", ">settings<", "+ new project"} {
+		if code != 200 || !strings.Contains(body, want) {
+			t.Fatalf("empty start page missing %q (status %d):\n%s", want, code, body)
+		}
+	}
+
+	resp, _ := h.browserPost(c, "/project/new/demo", "repo: /does/not/exist\n")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("project with a missing repo directory: %d", resp.StatusCode)
+	}
+	resp, _ = h.browserPost(c, "/project/new/demo", "repo: "+h.repo+"\n")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("create project from the browser: %d", resp.StatusCode)
+	}
+	if out, _ := h.run("", "project", "demo"); !strings.Contains(out, "repo: "+h.repo) {
+		t.Fatalf("project not created with the given repo:\n%s", out)
+	}
+
+	home, _ := os.UserHomeDir()
+	resp, _ = h.browserPost(c, "/project/new/second", "repo: \"~\"\n")
+	resp.Body.Close()
+	if out, _ := h.run("", "project", "second"); resp.StatusCode != http.StatusOK || !strings.Contains(out, "repo: "+home) {
+		t.Fatalf("~ not expanded (%d):\n%s", resp.StatusCode, out)
+	}
+
+	if code, body := h.get(c, "/ui/new"); code != 200 || !strings.Contains(body, "New project") || !strings.Contains(body, `href="/ui/demo"`) {
+		t.Fatalf("new project page with existing projects: %d\n%s", code, body)
+	}
 }

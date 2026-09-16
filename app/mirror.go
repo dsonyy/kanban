@@ -31,7 +31,7 @@ type mirror struct {
 	files map[string]*entry
 }
 
-// Mirrored paths, relative to KANBAN_HOME: projects/P/project.yaml, projects/P/board.yaml, projects/P/items/N.yaml, projects/P/items/N.md.
+// Mirrored paths, relative to KK_HOME: projects/P/project.yaml, projects/P/board.yaml, projects/P/items/N.yaml, projects/P/items/N.md.
 func mirrored(rel string) bool {
 	parts := strings.Split(rel, "/")
 	if len(parts) == 3 && parts[0] == "projects" {
