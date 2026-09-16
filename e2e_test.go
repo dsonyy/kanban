@@ -144,6 +144,10 @@ func TestEndToEnd(t *testing.T) {
 		}
 	}
 	os.WriteFile(filepath.Join(home, "projects", "demo", "board.yaml"), []byte("columns:\n  - name: backlog\n    steps: []\n  - name: todo\n    steps: []\n  - name: doing\n    steps: []\n  - name: done\n    steps: []\n"), 0o644)
+	h.waitFor(func() bool {
+		out, _ := run("", "project", "demo", "board")
+		return strings.Contains(out, "name: doing")
+	}, "hand-written board to reach the server")
 	out, code = run("", "project", "new", "demo")
 	expect(out, code, 1, "already exists")
 	out, code = run("", "project", "new", "item")
@@ -170,8 +174,7 @@ func TestEndToEnd(t *testing.T) {
 	expect(out, code, 0, "now with tests")
 
 	os.WriteFile(filepath.Join(home, "projects", "demo", "items", "1.md"), []byte("Edited by hand\n"), 0o644)
-	out, code = run("", "item", "1")
-	expect(out, code, 0, "Edited by hand")
+	h.waitItem("1", "Edited by hand")
 
 	out, code = run("", "project", "demo")
 	expect(out, code, 0, "line: Edited by hand", "line: Second task")

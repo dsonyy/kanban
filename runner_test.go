@@ -16,6 +16,10 @@ func (h *harness) project(name, boardYAML string) {
 	if err := os.WriteFile(filepath.Join(h.home, "projects", name, "board.yaml"), []byte(boardYAML), 0o644); err != nil {
 		h.t.Fatal(err)
 	}
+	h.waitFor(func() bool {
+		out, _ := h.run("", "project", name, "board")
+		return out == boardYAML
+	}, "board.yaml of "+name+" to reach the server")
 }
 
 func (h *harness) newItem(column, content string) string {

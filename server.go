@@ -96,7 +96,7 @@ func serve(home, addr, tmuxName string) error {
 	if err != nil {
 		return err
 	}
-	s := &store{home: home, tmux: tmuxName, base: "http://" + addr, sizes: map[string]int64{}, suggesting: map[int]bool{}}
+	s := &store{home: home, tmux: tmuxName, base: "http://" + addr, sizes: map[string]int64{}, suggesting: map[int]bool{}, m: mirror{files: map[string]*entry{}}}
 	if err := s.writeHookSettings(); err != nil {
 		return err
 	}
@@ -110,6 +110,7 @@ func serve(home, addr, tmuxName string) error {
 	if err != nil {
 		return err
 	}
+	s.syncAll()
 	if err := s.watch(&wb.hub); err != nil {
 		return err
 	}

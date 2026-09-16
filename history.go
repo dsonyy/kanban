@@ -139,6 +139,7 @@ func (s *store) undo(hash string) (map[string]string, error) {
 		} else {
 			os.Remove(full)
 		}
+		s.syncFile(path)
 		restored = append(restored, path)
 	}
 	s.mu.Unlock()

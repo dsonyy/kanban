@@ -30,6 +30,7 @@ type store struct {
 	url    string
 	base   string
 	notify func(proj string, id int, e event)
+	m      mirror
 	sizes  map[string]int64
 	gitMu  sync.Mutex
 
@@ -203,41 +204,38 @@ func writeFile(path string, b []byte) error {
 }
 
 func (s *store) projects() ([]string, error) {
-	entries, err := os.ReadDir(filepath.Join(s.home, "projects"))
-	if errors.Is(err, os.ErrNotExist) {
-		return []string{}, nil
-	}
 	names := []string{}
-	for _, e := range entries {
-		if e.IsDir() {
-			names = append(names, e.Name())
+	for _, rel := range s.keys("projects/") {
+		if strings.HasSuffix(rel, "/project.yaml") {
+			names = append(names, strings.Split(rel, "/")[1])
 		}
 	}
-	return names, err
+	return sortedUnique(names), nil
 }
-
 func (s *store) createProject(name, repo string) error {
 	if !validName.MatchString(name) || reserved(name) {
 		return badRequest("invalid project name %q", name)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	dir := s.projectDir(name)
-	if _, err := os.Stat(dir); err == nil {
+	if _, err := os.Stat(s.projectDir(name)); err == nil || s.get(projectRel(name, "project.yaml")) != nil {
 		return badRequest("project %q already exists", name)
 	}
-	if err := os.MkdirAll(filepath.Join(dir, "items"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(s.projectDir(name), "items"), 0o755); err != nil {
 		return err
 	}
-	if err := writeYAML(filepath.Join(dir, "project.yaml"), project{Repo: repo}); err != nil {
+	p, err := yaml.Marshal(project{Repo: repo})
+	if err != nil {
 		return err
 	}
-	if err := writeFile(filepath.Join(dir, "board.yaml"), []byte(defaultBoard)); err != nil {
+	if err := s.write(projectRel(name, "project.yaml"), p, nil); err != nil {
+		return err
+	}
+	if err := s.write(projectRel(name, "board.yaml"), []byte(defaultBoard), nil); err != nil {
 		return err
 	}
 	return s.setLastProject(name)
 }
-
 func (s *store) setLastProject(name string) error {
 	return writeYAML(filepath.Join(s.home, "state.yaml"), map[string]string{"project": name})
 }
@@ -253,58 +251,56 @@ func (s *store) resolveProject(name string) (string, error) {
 		}
 		name = st["project"]
 	}
-	if _, err := os.Stat(s.projectDir(name)); err != nil {
+	if s.get(projectRel(name, "project.yaml")) == nil {
 		return "", fmt.Errorf("project %q: %w", name, errNotFound)
 	}
 	return name, nil
 }
 
 func (s *store) board(proj string) (project, board, error) {
-	var p project
-	var b board
-	if err := readYAML(filepath.Join(s.projectDir(proj), "project.yaml"), &p); err != nil {
-		return p, b, err
+	pe, be := s.get(projectRel(proj, "project.yaml")), s.get(projectRel(proj, "board.yaml"))
+	switch {
+	case pe == nil:
+		return project{}, board{}, fmt.Errorf("project %q: %w", proj, errNotFound)
+	case pe.err != nil:
+		return pe.project, board{}, pe.err
+	case be == nil:
+		return pe.project, board{}, fmt.Errorf("board.yaml of %q: %w", proj, errNotFound)
 	}
-	return p, b, readYAML(filepath.Join(s.projectDir(proj), "board.yaml"), &b)
+	return pe.project, be.board, be.err
 }
-
 func (s *store) itemIDs(proj string) ([]int, error) {
-	paths, err := filepath.Glob(filepath.Join(s.projectDir(proj), "items", "*.yaml"))
 	ids := []int{}
-	for _, p := range paths {
-		if id, err := strconv.Atoi(strings.TrimSuffix(filepath.Base(p), ".yaml")); err == nil {
-			ids = append(ids, id)
+	for _, rel := range s.keys("projects/" + proj + "/items/") {
+		if name, ok := strings.CutSuffix(strings.TrimPrefix(rel, "projects/"+proj+"/items/"), ".yaml"); ok {
+			if id, err := strconv.Atoi(name); err == nil {
+				ids = append(ids, id)
+			}
 		}
 	}
 	slices.Sort(ids)
-	return ids, err
+	return ids, nil
 }
-
 func (s *store) findItem(id int) (string, error) {
-	paths, err := filepath.Glob(filepath.Join(s.home, "projects", "*", "items", strconv.Itoa(id)+".yaml"))
-	if err != nil {
-		return "", err
+	suffix := "/items/" + strconv.Itoa(id) + ".yaml"
+	for _, rel := range s.keys("projects/") {
+		if strings.HasSuffix(rel, suffix) {
+			return strings.Split(rel, "/")[1], nil
+		}
 	}
-	if len(paths) == 0 {
-		return "", fmt.Errorf("item %d: %w", id, errNotFound)
-	}
-	return filepath.Base(filepath.Dir(filepath.Dir(paths[0]))), nil
+	return "", fmt.Errorf("item %d: %w", id, errNotFound)
 }
-
 func (s *store) item(proj string, id int) (item, error) {
-	var st itemState
-	if err := readYAML(s.itemPath(proj, id, ".yaml"), &st); err != nil {
-		return item{}, err
+	e := s.get(itemRel(proj, id, ".yaml"))
+	if e == nil {
+		return item{}, fmt.Errorf("item %d: %w", id, errNotFound)
 	}
-	content, err := os.ReadFile(s.itemPath(proj, id, ".md"))
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return item{}, err
-	}
+	st := e.state
+	content := string(rawOf(s.get(itemRel(proj, id, ".md"))))
 	return item{ID: id, Project: proj, Column: st.Column, Step: st.Step, Status: st.Status, Attention: st.Attention,
 		Harness: st.Harness, Session: st.Session, Transcript: st.Transcript, Context: st.Context, Output: st.Output,
-		Live: st.StepHarness, Parents: st.Parents, Created: st.Created, Content: string(content)}, nil
+		Live: st.StepHarness, Parents: st.Parents, Created: st.Created, Content: content}, nil
 }
-
 func (s *store) createItem(proj, col string, content []byte) (item, error) {
 	_, b, err := s.board(proj)
 	if err != nil {
@@ -328,10 +324,14 @@ func (s *store) createItem(proj, col string, content []byte) (item, error) {
 	if err != nil {
 		return item{}, err
 	}
-	if err := writeFile(s.itemPath(proj, id, ".md"), content); err != nil {
+	state, err := yaml.Marshal(itemState{Column: col, Created: now(), Status: "pending", Ran: col})
+	if err != nil {
 		return item{}, err
 	}
-	if err := writeYAML(s.itemPath(proj, id, ".yaml"), itemState{Column: col, Created: now(), Status: "pending", Ran: col}); err != nil {
+	if err := s.write(itemRel(proj, id, ".md"), content, nil); err != nil {
+		return item{}, err
+	}
+	if err := s.write(itemRel(proj, id, ".yaml"), state, nil); err != nil {
 		return item{}, err
 	}
 	if err := s.logEvent(proj, id, event{At: now(), Event: "created", To: col}); err != nil {
@@ -368,7 +368,7 @@ func (s *store) editItem(proj string, id int, content []byte) (item, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := writeFile(s.itemPath(proj, id, ".md"), content); err != nil {
+	if err := s.write(itemRel(proj, id, ".md"), content, rawOf(s.get(itemRel(proj, id, ".md")))); err != nil {
 		return item{}, err
 	}
 	if err := s.logEvent(proj, id, event{At: now(), Event: "edited"}); err != nil {
@@ -436,17 +436,26 @@ func (s *store) transition(proj string, id int, fn func(*itemState) (event, erro
 func (s *store) update(proj string, id int, fn func(*itemState) ([]event, error)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	st, err := s.readState(proj, id)
-	if err != nil {
+	rel := itemRel(proj, id, ".yaml")
+	e := s.get(rel)
+	if e == nil {
+		return fmt.Errorf("item %d: %w", id, errNotFound)
+	}
+	if e.err != nil {
+		return e.err
+	}
+	// Work on a deep copy: fn appends to slices and the mirror entry must stay what is on disk until the write succeeds.
+	before, _ := yaml.Marshal(e.state)
+	var st itemState
+	if err := yaml.Unmarshal(before, &st); err != nil {
 		return err
 	}
-	before, _ := yaml.Marshal(st)
 	evs, err := fn(&st)
 	if err != nil {
 		return err
 	}
 	if after, _ := yaml.Marshal(st); !bytes.Equal(before, after) {
-		if err := writeYAML(s.itemPath(proj, id, ".yaml"), st); err != nil {
+		if err := s.write(rel, after, e.raw); err != nil {
 			return err
 		}
 	}
@@ -493,20 +502,19 @@ var errPartialState = errors.New("state file is empty or incomplete, probably be
 
 // An editor saving in place truncates the file first; writing state back at that moment would replace the file and lose the edit.
 func (s *store) readState(proj string, id int) (itemState, error) {
-	var st itemState
-	if err := readYAML(s.itemPath(proj, id, ".yaml"), &st); err != nil {
-		return st, err
+	e := s.get(itemRel(proj, id, ".yaml"))
+	if e == nil {
+		return itemState{}, fmt.Errorf("item %d: %w", id, errNotFound)
 	}
-	if st.Column == "" {
-		return st, errPartialState
-	}
-	return st, nil
+	return e.state, e.err
 }
-
 func (s *store) boardRaw(proj string) ([]byte, error) {
-	return os.ReadFile(filepath.Join(s.projectDir(proj), "board.yaml"))
+	e := s.get(projectRel(proj, "board.yaml"))
+	if e == nil {
+		return nil, fmt.Errorf("board.yaml of %q: %w", proj, errNotFound)
+	}
+	return e.raw, nil
 }
-
 func (s *store) saveBoard(proj string, raw []byte) error {
 	var b board
 	if err := yaml.Unmarshal(raw, &b); err != nil {
@@ -540,13 +548,16 @@ func (s *store) saveBoard(proj string, raw []byte) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return writeFile(filepath.Join(s.projectDir(proj), "board.yaml"), raw)
+	return s.write(projectRel(proj, "board.yaml"), raw, rawOf(s.get(projectRel(proj, "board.yaml"))))
 }
 
 func (s *store) projectRaw(proj string) ([]byte, error) {
-	return os.ReadFile(filepath.Join(s.projectDir(proj), "project.yaml"))
+	e := s.get(projectRel(proj, "project.yaml"))
+	if e == nil {
+		return nil, fmt.Errorf("project %q: %w", proj, errNotFound)
+	}
+	return e.raw, nil
 }
-
 func (s *store) saveProject(proj string, raw []byte) error {
 	var p project
 	if err := yaml.Unmarshal(raw, &p); err != nil {
@@ -557,7 +568,7 @@ func (s *store) saveProject(proj string, raw []byte) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return writeFile(filepath.Join(s.projectDir(proj), "project.yaml"), raw)
+	return s.write(projectRel(proj, "project.yaml"), raw, rawOf(s.get(projectRel(proj, "project.yaml"))))
 }
 
 func (s *store) runs(proj string, id int) ([]string, error) {

@@ -462,6 +462,14 @@ func (s *store) watch(h *hub) error {
 	}
 	addTree(root)
 	go func() {
+		for {
+			time.Sleep(30 * time.Second)
+			for p := range s.syncAll() {
+				h.publish(p)
+			}
+		}
+	}()
+	go func() {
 		pending := map[string]bool{}
 		var flush <-chan time.Time
 		for {
@@ -478,8 +486,12 @@ func (s *store) watch(h *hub) error {
 					// fsnotify is not recursive and files may land before the new directory is watched.
 					if fi, err := os.Stat(e.Name); err == nil && fi.IsDir() {
 						addTree(e.Name)
+						for p := range s.syncAll() {
+							pending[p] = true
+						}
 					}
 				}
+				s.syncFile(s.rel(e.Name))
 				rel, err := filepath.Rel(root, e.Name)
 				if err != nil || rel == "." {
 					continue
