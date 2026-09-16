@@ -178,6 +178,15 @@ func (s *store) reconcile() error {
 }
 
 func (s *store) advance(proj string, id int, st *itemState, panes map[string]pane, agents *int, limit int) []event {
+	before := st.Attention
+	evs := s.advanceStep(proj, id, st, panes, agents, limit)
+	if before != "" && st.Attention == "" && !slices.ContainsFunc(evs, func(e event) bool { return endsWait[e.Event] }) {
+		evs = append([]event{{Event: "resumed", Column: st.Column, Message: before}}, evs...)
+	}
+	return evs
+}
+
+func (s *store) advanceStep(proj string, id int, st *itemState, panes map[string]pane, agents *int, limit int) []event {
 	if st.Column == archive {
 		return nil
 	}

@@ -23,9 +23,11 @@ var (
 )
 
 type store struct {
-	home string
-	tmux string
-	url  string
+	home   string
+	tmux   string
+	url    string
+	base   string
+	notify func(proj string, id int, e event)
 	// ponytail: one lock for all writes, per-project locks if agents ever contend on it
 	mu sync.Mutex
 }
@@ -103,7 +105,9 @@ type item struct {
 }
 
 type config struct {
-	Agents int `yaml:"agents"`
+	Agents int    `yaml:"agents"`
+	Ntfy   string `yaml:"ntfy"`
+	URL    string `yaml:"url"`
 }
 
 func now() time.Time { return time.Now().UTC().Truncate(time.Second) }
@@ -397,8 +401,34 @@ func (s *store) update(proj string, id int, fn func(*itemState) ([]event, error)
 		if err := s.logEvent(proj, id, e); err != nil {
 			return err
 		}
+		if s.notify != nil && startsWait[e.Event] {
+			s.notify(proj, id, e)
+		}
 	}
 	return nil
+}
+
+func (s *store) reply(proj string, id int, text []byte) (item, error) {
+	msg := strings.TrimRight(string(text), "\n")
+	if msg == "" {
+		return item{}, badRequest("reply is empty")
+	}
+	err := s.update(proj, id, func(st *itemState) ([]event, error) {
+		if st.Status != "running" || st.Pane == "" {
+			return nil, badRequest("item %d is %s, only a running step can take a reply", id, st.Status)
+		}
+		if _, err := s.tmuxCmd("send-keys", "-t", st.Pane, "-l", msg); err != nil {
+			return nil, err
+		}
+		if _, err := s.tmuxCmd("send-keys", "-t", st.Pane, "Enter"); err != nil {
+			return nil, err
+		}
+		return []event{{Event: "replied", Column: st.Column, Step: ptr(st.Step), Message: msg}}, nil
+	})
+	if err != nil {
+		return item{}, err
+	}
+	return s.item(proj, id)
 }
 
 func ptr[T any](v T) *T { return &v }

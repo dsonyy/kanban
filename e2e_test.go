@@ -61,10 +61,15 @@ func (h *harness) stop() {
 	}
 }
 
-func (h *harness) run(stdin string, args ...string) (string, int) {
-	h.t.Helper()
+func (h *harness) cmd(args ...string) *exec.Cmd {
 	cmd := exec.Command(h.bin, args...)
 	cmd.Env, cmd.Dir = h.env, h.repo
+	return cmd
+}
+
+func (h *harness) run(stdin string, args ...string) (string, int) {
+	h.t.Helper()
+	cmd := h.cmd(args...)
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}

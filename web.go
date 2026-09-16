@@ -78,6 +78,8 @@ type page struct {
 	BoardRaw   string
 	ProjectRaw string
 	Term       string
+	Feed       feedView
+	Waited     string
 }
 
 func newWeb(s *store, token string) (*web, error) {
@@ -96,7 +98,7 @@ func newWeb(s *store, token string) (*web, error) {
 			return strconv.Itoa(*p)
 		},
 	}
-	for _, name := range []string{"board", "item", "terminal", "settings", "empty"} {
+	for _, name := range []string{"board", "item", "feed", "terminal", "settings", "empty"} {
 		t, err := template.New("").Funcs(funcs).ParseFS(webFS, "web/templates/layout.html", "web/templates/"+name+".html")
 		if err != nil {
 			return nil, err
@@ -113,6 +115,7 @@ func (wb *web) handler(api http.Handler) http.Handler {
 	mux.HandleFunc("GET /{$}", wb.home)
 	mux.HandleFunc("GET /ui/{project}", wb.page("board"))
 	mux.HandleFunc("GET /ui/{project}/item/{id}", wb.page("item"))
+	mux.HandleFunc("GET /ui/{project}/feed", wb.page("feed"))
 	mux.HandleFunc("GET /ui/{project}/terminal", wb.page("terminal"))
 	mux.HandleFunc("GET /ui/{project}/settings", wb.page("settings"))
 	mux.HandleFunc("GET /sse", wb.sse)
@@ -192,6 +195,7 @@ func (wb *web) page(view string) http.HandlerFunc {
 			}
 			if err == nil {
 				p.Events, err = wb.s.events(name, id)
+				p.Waited = waited(waits(p.Events), time.Time{}, time.Now()).Round(time.Second).String()
 				slices.Reverse(p.Events)
 			}
 			if err == nil {
@@ -199,6 +203,8 @@ func (wb *web) page(view string) http.HandlerFunc {
 				slices.Reverse(p.Runs)
 			}
 			p.Term = "/term/item/" + strconv.Itoa(id)
+		case "feed":
+			p.Feed, err = wb.s.feed(time.Now())
 		case "terminal":
 			p.Term = "/term/project/" + name
 		case "settings":
@@ -242,7 +248,7 @@ func (wb *web) sse(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case p := <-ch:
-			fmt.Fprintf(w, "event: change-%s\ndata: %s\n\n", p, p)
+			fmt.Fprintf(w, "event: change-%s\ndata: %s\n\nevent: change\ndata: %s\n\n", p, p, p)
 		case <-ping.C:
 			fmt.Fprint(w, ": ping\n\n")
 		case <-r.Context().Done():

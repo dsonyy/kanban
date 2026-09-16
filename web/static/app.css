@@ -135,6 +135,20 @@ textarea { width: 100%; padding: 8px; resize: vertical; display: block; }
 .settings textarea { min-height: 60vh; font-size: 12px; }
 .settings textarea.short { min-height: 160px; }
 
+.feed { flex: 1; min-height: 0; overflow-y: auto; padding: var(--gap); display: flex; flex-direction: column; gap: 24px; max-width: 960px; }
+.feed section { display: flex; flex-direction: column; gap: var(--gap); }
+.feed .open { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--gap); }
+.entry { border: 1px solid var(--line-strong); padding: 10px; display: flex; flex-direction: column; gap: 8px; background: var(--surface); }
+.entry-head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.entry-title { color: var(--text-strong); }
+.entry-flag { align-self: flex-start; margin: 0; font-size: 13px; }
+.entry-title:hover, .events a:hover { text-decoration: underline; }
+.events .resolved { color: var(--text-dim); }
+.events .resolved b { color: var(--text-dim); }
+.reply input { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line-strong); border-right: 0; padding: 4px 8px; min-width: 260px; }
+a.button { display: inline-block; padding: 5px 12px; border: 1px solid var(--line-strong); }
+a.button:hover { border-color: var(--text); color: var(--text-strong); }
+
 .empty { padding: 40px var(--gap); }
 .empty pre { display: inline-block; padding: 8px 12px; border: 1px solid var(--line-strong); }
 

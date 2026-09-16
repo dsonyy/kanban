@@ -31,6 +31,11 @@ if (view?.dataset.sse) {
   let busy = false, again = false;
   const refresh = async () => {
     if (busy) return void (again = true);
+    const typing = document.activeElement;
+    if (view.contains(typing) && typing.value) {
+      typing.addEventListener("blur", refresh, { once: true });
+      return;
+    }
     busy = true;
     try {
       const open = [...view.querySelectorAll("details[open]")].map((d) => d.dataset.run);
@@ -72,6 +77,13 @@ document.addEventListener("submit", (e) => {
   } else if (form.matches("[data-move]")) {
     e.preventDefault();
     act(() => api("POST", `/item/${form.dataset.move}/move/${encodeURIComponent(data.get("column"))}`));
+  } else if (form.matches("[data-reply]")) {
+    e.preventDefault();
+    act(async () => {
+      await api("POST", `/item/${form.dataset.reply}/reply`, data.get("text"));
+      form.text.value = "";
+      flash("Sent");
+    });
   } else if (form.matches("[data-edit-item]")) {
     e.preventDefault();
     act(async () => {

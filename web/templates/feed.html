@@ -1,0 +1,42 @@
+{{define "view"}}
+<main id="view" class="feed" data-sse="change">
+  <section>
+    <h2>Waiting on you <span class="count">{{len .Feed.Open}}</span> <span class="muted">· waited in the last 24h: {{.Feed.Waited24h}}</span></h2>
+    {{if not .Feed.Open}}<p class="muted">Nothing is waiting.</p>{{end}}
+    <ol class="open">
+      {{range .Feed.Open}}
+      <li class="entry">
+        <div class="entry-head">
+          <a href="/ui/{{.Project}}/item/{{.ID}}" class="entry-title">#{{.ID}} {{.Line}}</a>
+          <span class="muted">{{.Project}} · {{.Column}} · waiting {{.Waiting}}</span>
+        </div>
+        <p class="flag entry-flag">{{.Attention}}</p>
+        <div class="actions">
+          {{if eq .Status "waiting"}}<button data-post="/item/{{.ID}}/approve" class="primary">Approve</button>{{end}}
+          {{if eq .Status "failed"}}<button data-post="/item/{{.ID}}/retry" class="primary">Retry</button>{{end}}
+          {{if eq .Status "running"}}
+          <form data-reply="{{.ID}}" class="inline reply">
+            <input name="text" placeholder="Reply to the running step" aria-label="Reply" required>
+            <button type="submit">Send</button>
+          </form>
+          {{end}}
+          <a class="button" href="/ui/{{.Project}}/item/{{.ID}}">Open</a>
+        </div>
+      </li>
+      {{end}}
+    </ol>
+  </section>
+  <section>
+    <h2>History</h2>
+    {{if not .Feed.Recent}}<p class="muted">No events yet.</p>{{end}}
+    <ol class="events">
+      {{range .Feed.Recent}}
+      <li{{if not .Open}} class="resolved"{{end}}>
+        <time>{{ago .At}}</time>
+        <span><b>{{.Event}}</b> <a href="/ui/{{.Project}}/item/{{.ID}}">#{{.ID}} {{.Line}}</a> <span class="muted">{{.Project}}</span> · {{.Message}}</span>
+      </li>
+      {{end}}
+    </ol>
+  </section>
+</main>
+{{end}}

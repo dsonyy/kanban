@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -77,7 +78,9 @@ func serve(home, addr, tmuxName string) error {
 	if err != nil {
 		return err
 	}
-	s := &store{home: home, tmux: tmuxName, url: "http://" + addr + "/?token=" + token}
+	s := &store{home: home, tmux: tmuxName, base: "http://" + addr}
+	s.url = s.base + "/?token=" + token
+	s.notify = s.push
 	wb, err := newWeb(s, token)
 	if err != nil {
 		return err
@@ -131,6 +134,8 @@ func dispatch(s *store, q query, r *http.Request) (any, error) {
 		return nil, err
 	}
 	switch {
+	case q.has("feed") && q.verb == "":
+		return s.feed(time.Now())
 	case q.has("server"):
 		return map[string]any{"pid": os.Getpid(), "url": s.url}, nil
 	case q.has("item"):
@@ -231,6 +236,8 @@ func dispatchItem(s *store, q query, body []byte) (any, error) {
 		return s.approve(proj, id)
 	case q.verb == "retry" && len(q.args) == 0:
 		return s.retry(proj, id)
+	case q.verb == "reply" && len(q.args) == 0:
+		return s.reply(proj, id, body)
 	case q.verb == "attach" && len(q.args) == 0:
 		if err := s.ensureSession(proj, id); err != nil {
 			return nil, err
