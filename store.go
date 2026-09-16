@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -28,6 +29,7 @@ type store struct {
 	url    string
 	base   string
 	notify func(proj string, id int, e event)
+	sizes  map[string]int64
 	// ponytail: one lock for all writes, per-project locks if agents ever contend on it
 	mu sync.Mutex
 }
@@ -37,8 +39,9 @@ type project struct {
 }
 
 type column struct {
-	Name  string `yaml:"name"`
-	Steps []step `yaml:"steps"`
+	Name    string `yaml:"name"`
+	Harness string `yaml:"harness,omitempty"`
+	Steps   []step `yaml:"steps"`
 }
 
 type step struct {
@@ -48,6 +51,9 @@ type step struct {
 	Goto    string        `yaml:"goto,omitempty"`
 	Timeout time.Duration `yaml:"timeout,omitempty"`
 	Idle    time.Duration `yaml:"idle,omitempty"`
+	Harness string        `yaml:"harness,omitempty"`
+	Args    []string      `yaml:"args,omitempty"`
+	Resume  bool          `yaml:"resume,omitempty"`
 }
 
 func (s step) kind() string {
@@ -68,15 +74,28 @@ type board struct {
 }
 
 type itemState struct {
-	Column    string    `yaml:"column"`
-	Created   time.Time `yaml:"created"`
-	Step      int       `yaml:"step"`
-	Status    string    `yaml:"status,omitempty"`
-	Kind      string    `yaml:"kind,omitempty"`
-	Pane      string    `yaml:"pane,omitempty"`
-	Started   time.Time `yaml:"started,omitempty"`
-	Attention string    `yaml:"attention,omitempty"`
-	Ran       string    `yaml:"ran,omitempty"`
+	Column     string    `yaml:"column"`
+	Created    time.Time `yaml:"created"`
+	Step       int       `yaml:"step"`
+	Status     string    `yaml:"status,omitempty"`
+	Kind       string    `yaml:"kind,omitempty"`
+	Pane       string    `yaml:"pane,omitempty"`
+	Started    time.Time `yaml:"started,omitempty"`
+	Attention  string    `yaml:"attention,omitempty"`
+	Ran        string    `yaml:"ran,omitempty"`
+	Harness    string    `yaml:"harness,omitempty"`
+	Session    string    `yaml:"session,omitempty"`
+	Transcript string    `yaml:"transcript,omitempty"`
+	Context    int       `yaml:"context,omitempty"`
+	Output     int       `yaml:"output,omitempty"`
+	Recover    bool      `yaml:"recover,omitempty"`
+	// Harness of the running step; Harness above is the harness of the last session, kept for resume.
+	StepHarness string `yaml:"step_harness,omitempty"`
+}
+
+func (st *itemState) enter(col string) {
+	*st = itemState{Column: col, Created: st.Created, Status: "pending", Ran: col,
+		Harness: st.Harness, Session: st.Session, Transcript: st.Transcript, Context: st.Context, Output: st.Output}
 }
 
 type event struct {
@@ -94,14 +113,20 @@ type event struct {
 }
 
 type item struct {
-	ID        int       `yaml:"id"`
-	Project   string    `yaml:"project"`
-	Column    string    `yaml:"column"`
-	Step      int       `yaml:"step"`
-	Status    string    `yaml:"status"`
-	Attention string    `yaml:"attention,omitempty"`
-	Created   time.Time `yaml:"created"`
-	Content   string    `yaml:"content"`
+	ID         int       `yaml:"id"`
+	Project    string    `yaml:"project"`
+	Column     string    `yaml:"column"`
+	Step       int       `yaml:"step"`
+	Status     string    `yaml:"status"`
+	Attention  string    `yaml:"attention,omitempty"`
+	Harness    string    `yaml:"harness,omitempty"`
+	Session    string    `yaml:"session,omitempty"`
+	Transcript string    `yaml:"transcript,omitempty"`
+	Context    int       `yaml:"context,omitempty"`
+	Output     int       `yaml:"output,omitempty"`
+	Live       string    `yaml:"step_harness,omitempty"`
+	Created    time.Time `yaml:"created"`
+	Content    string    `yaml:"content"`
 }
 
 type config struct {
@@ -252,7 +277,9 @@ func (s *store) item(proj string, id int) (item, error) {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return item{}, err
 	}
-	return item{ID: id, Project: proj, Column: st.Column, Step: st.Step, Status: st.Status, Attention: st.Attention, Created: st.Created, Content: string(content)}, nil
+	return item{ID: id, Project: proj, Column: st.Column, Step: st.Step, Status: st.Status, Attention: st.Attention,
+		Harness: st.Harness, Session: st.Session, Transcript: st.Transcript, Context: st.Context, Output: st.Output,
+		Live: st.StepHarness, Created: st.Created, Content: string(content)}, nil
 }
 
 func (s *store) createItem(proj, col string, content []byte) (item, error) {
@@ -339,7 +366,7 @@ func (s *store) moveItem(proj string, id int, to string) (item, error) {
 	}
 	return s.transition(proj, id, func(st *itemState) (event, error) {
 		e := event{Event: "moved", From: st.Column, To: to}
-		*st = itemState{Column: to, Created: st.Created, Status: "pending", Ran: to}
+		st.enter(to)
 		return e, nil
 	})
 }
@@ -453,9 +480,15 @@ func (s *store) saveBoard(proj string, raw []byte) error {
 			return badRequest("board.yaml: column %q defined twice", c.Name)
 		}
 		seen[c.Name] = true
+		if !harnesses[c.Harness] {
+			return badRequest("board.yaml: column %q has unknown harness %q", c.Name, c.Harness)
+		}
 		for i, sp := range c.Steps {
 			if sp.kind() == "" {
 				return badRequest("board.yaml: column %q step %d must have exactly one of shell, agent, human, goto", c.Name, i)
+			}
+			if !harnesses[sp.Harness] {
+				return badRequest("board.yaml: column %q step %d has unknown harness %q", c.Name, i, sp.Harness)
 			}
 		}
 	}
@@ -538,4 +571,69 @@ func (s *store) events(proj string, id int) ([]event, error) {
 		return evs, nil
 	}
 	return evs, err
+}
+
+func (s *store) hook(name string, id int, body []byte) (map[string]string, error) {
+	var payload struct {
+		SessionID      string `json:"session_id"`
+		TranscriptPath string `json:"transcript_path"`
+		Message        string `json:"message"`
+	}
+	json.Unmarshal(body, &payload)
+	proj, err := s.findItem(id)
+	if err != nil {
+		return nil, err
+	}
+	result := "ignored"
+	err = s.update(proj, id, func(st *itemState) ([]event, error) {
+		// Late hooks from a session that no longer runs this step must not touch the new state.
+		if st.Status != "running" || st.StepHarness == "" || payload.SessionID != "" && st.Session != "" && payload.SessionID != st.Session && name != "session-start" {
+			return nil, nil
+		}
+		result = "applied"
+		switch name {
+		case "session-start":
+			if payload.SessionID == "" {
+				result = "ignored"
+				return nil, nil
+			}
+			st.Session, st.Transcript = payload.SessionID, payload.TranscriptPath
+			return []event{{Event: "session", Column: st.Column, Step: ptr(st.Step), Message: st.StepHarness + " " + payload.SessionID}}, nil
+		case "stop":
+			if st.Transcript != "" {
+				if _, u, err := readTranscript(st.StepHarness, st.Transcript); err == nil {
+					st.Context, st.Output = u.Context, u.Output
+				}
+			}
+			logPath := ""
+			if p, err := s.panes(); err == nil {
+				if pn, ok := p[st.Pane]; ok {
+					logPath = s.saveRun(proj, id, st, pn)
+				}
+			}
+			e := event{Event: "finished", Column: st.Column, Step: ptr(st.Step), Kind: st.Kind, Took: time.Since(st.Started).Round(time.Second).String(), Log: logPath}
+			st.Step, st.Status, st.Kind, st.Pane, st.Attention, st.StepHarness = st.Step+1, "pending", "", "", "", ""
+			return []event{e}, nil
+		case "notification":
+			msg := payload.Message
+			if msg == "" {
+				msg = st.StepHarness + " needs attention"
+			}
+			if st.Attention == msg {
+				return nil, nil
+			}
+			st.Attention = msg
+			return []event{{Event: "attention", Column: st.Column, Step: ptr(st.Step), Message: msg}}, nil
+		case "prompt", "tool-done":
+			if st.Attention == "" {
+				return nil, nil
+			}
+			prev := st.Attention
+			st.Attention = ""
+			return []event{{Event: "resumed", Column: st.Column, Step: ptr(st.Step), Message: prev}}, nil
+		}
+		result = "ignored"
+		return nil, nil
+	})
+	return map[string]string{"hook": name, "result": result}, err
 }

@@ -16,6 +16,7 @@ var verbs = map[string]struct{ post, exec bool }{
 	"approve": {post: true},
 	"retry":   {post: true},
 	"reply":   {post: true},
+	"hook":    {post: true},
 	"log":     {},
 	"runs":    {},
 	"attach":  {exec: true},
@@ -52,7 +53,7 @@ func parse(tokens []string) (query, error) {
 			q.ids[t] = tokens[i]
 		}
 	}
-	if len(q.ids) == 0 {
+	if len(q.ids) == 0 && q.verb != "hook" {
 		return q, fmt.Errorf("nothing to do")
 	}
 	return q, nil
@@ -80,7 +81,7 @@ func (q query) path() string {
 }
 
 func (q query) takesBody() bool {
-	return q.verb == "edit" || q.verb == "reply" || q.verb == "new" && q.has("item")
+	return q.verb == "edit" || q.verb == "reply" || q.verb == "hook" || q.verb == "new" && q.has("item")
 }
 
 func (q query) method() string {

@@ -197,7 +197,7 @@ func (s *store) advanceStep(proj string, id int, st *itemState, panes map[string
 			*agents--
 		}
 		e := event{Event: "moved", From: st.Ran, To: st.Column, Message: "external"}
-		*st = itemState{Column: st.Column, Created: st.Created, Status: "pending", Ran: st.Column}
+		st.enter(st.Column)
 		return []event{e}
 	}
 	fail := func(msg string, e event) []event {
@@ -211,6 +211,7 @@ func (s *store) advanceStep(proj string, id int, st *itemState, panes map[string
 	var (
 		b      board
 		i      = -1
+		col    column
 		steps  []step
 		broken string
 	)
@@ -219,7 +220,7 @@ func (s *store) advanceStep(proj string, id int, st *itemState, panes map[string
 	} else if i = slices.IndexFunc(bd.Columns, func(c column) bool { return c.Name == st.Column }); i < 0 {
 		broken = fmt.Sprintf("column %q is not in board.yaml", st.Column)
 	} else {
-		b, steps = bd, bd.Columns[i].Steps
+		b, col, steps = bd, bd.Columns[i], bd.Columns[i].Steps
 	}
 	// A running step outlives a broken board.yaml, which is often just a half-saved edit.
 	if broken != "" && (st.Status == "" || st.Status == "pending" || st.Status == "queued") {
@@ -256,14 +257,14 @@ func (s *store) advanceStep(proj string, id int, st *itemState, panes map[string
 				return fail(fmt.Sprintf("goto %q: no such column", to), event{})
 			}
 			e := event{Event: "moved", From: st.Column, To: to, Message: "goto"}
-			*st = itemState{Column: to, Created: st.Created, Status: "pending", Ran: to}
+			st.enter(to)
 			return []event{e}
 		case "shell", "agent":
 			if sp.kind() == "agent" && *agents >= limit {
 				st.Status, st.Kind, st.Started = "queued", "agent", now()
 				return []event{{Event: "queued", Column: st.Column, Step: ptr(st.Step)}}
 			}
-			return s.start(proj, id, st, sp, agents)
+			return s.start(proj, id, st, col, sp, agents)
 		}
 		return fail(fmt.Sprintf("step %d must have exactly one of shell, agent, human, goto", st.Step), event{})
 
@@ -275,12 +276,26 @@ func (s *store) advanceStep(proj string, id int, st *itemState, panes map[string
 			st.Status = "pending"
 			return nil
 		}
-		return s.start(proj, id, st, steps[st.Step], agents)
+		return s.start(proj, id, st, col, steps[st.Step], agents)
 
 	case "running":
 		p, ok := panes[st.Pane]
+		integrated := st.Kind == "agent" && st.StepHarness != ""
+		if !ok && integrated && st.Session != "" {
+			*agents--
+			st.Status, st.Pane, st.Recover = "pending", "", true
+			return []event{{Event: "recovering", Column: st.Column, Step: ptr(st.Step), Message: "session lost, resuming " + st.Session}}
+		}
 		if !ok {
 			return fail("step session was lost", event{Kind: st.Kind})
+		}
+		if integrated && st.Transcript != "" {
+			if fi, err := os.Stat(st.Transcript); err == nil && fi.Size() != s.sizes[st.Transcript] {
+				s.sizes[st.Transcript] = fi.Size()
+				if _, u, err := readTranscript(st.Harness, st.Transcript); err == nil {
+					st.Context, st.Output = u.Context, u.Output
+				}
+			}
 		}
 		var sp step
 		if st.Step < len(steps) {
@@ -290,6 +305,9 @@ func (s *store) advanceStep(proj string, id int, st *itemState, panes map[string
 		if p.dead {
 			logPath := s.saveRun(proj, id, st, p)
 			e := event{Kind: st.Kind, Exit: ptr(p.exit), Took: took.String(), Log: logPath}
+			if integrated {
+				return fail(fmt.Sprintf("%s exited before finishing its turn (exit %d)", st.Harness, p.exit), e)
+			}
 			if p.exit != 0 {
 				return fail(fmt.Sprintf("%s step %d exited with %d", st.Kind, st.Step, p.exit), e)
 			}
@@ -305,7 +323,7 @@ func (s *store) advanceStep(proj string, id int, st *itemState, panes map[string
 			return fail(fmt.Sprintf("%s step %d timed out after %s", st.Kind, st.Step, sp.Timeout), event{Kind: st.Kind, Took: took.String(), Log: logPath})
 		}
 		idle := sp.Idle
-		if idle == 0 && st.Kind == "agent" {
+		if idle == 0 && st.Kind == "agent" && !integrated {
 			idle = defaultIdle
 		}
 		quiet := time.Since(p.activity).Round(time.Second)
@@ -320,16 +338,42 @@ func (s *store) advanceStep(proj string, id int, st *itemState, panes map[string
 	return nil
 }
 
-func (s *store) start(proj string, id int, st *itemState, sp step, agents *int) []event {
+func (s *store) start(proj string, id int, st *itemState, col column, sp step, agents *int) []event {
 	cmd := sp.Shell
+	harness := rawHarness
 	if sp.kind() == "agent" {
 		cmd = sp.Agent
+		harness = harnessOf(col, sp)
+	}
+	if harness != rawHarness {
+		if problem := s.trustProblem(harness, s.workdir(proj, id)); problem != "" {
+			st.Status, st.Attention = "failed", problem
+			return []event{{Event: "failed", Column: st.Column, Step: ptr(st.Step), Message: problem}}
+		}
+		resume := ""
+		if (sp.Resume || st.Recover) && st.Session != "" {
+			resume = st.Session
+		}
+		if st.Recover {
+			sp.Agent = "Continue where you left off."
+		}
+		var session string
+		var err error
+		if cmd, session, err = s.agentCommand(harness, sp, resume); err != nil {
+			st.Status, st.Attention = "failed", err.Error()
+			return []event{{Event: "failed", Column: st.Column, Step: ptr(st.Step), Message: st.Attention}}
+		}
+		if session != st.Session {
+			st.Transcript = ""
+		}
+		st.Harness, st.Session, st.Recover = harness, session, false
 	}
 	p, _, _ := s.board(proj)
 	err := s.ensureSession(proj, id)
 	var paneID string
 	if err == nil {
 		paneID, err = s.tmuxCmd("new-window", "-d", "-t", "="+sessionName(id), "-n", stepWindow, "-c", s.workdir(proj, id), "-P", "-F", "#{pane_id}",
+			"-e", "KANBAN_HOME="+s.home,
 			"-e", "KANBAN_TASK="+strconv.Itoa(id),
 			"-e", "KANBAN_TASK_FILE="+s.itemPath(proj, id, ".md"),
 			"-e", "KANBAN_PROJECT="+proj,
@@ -346,7 +390,15 @@ func (s *store) start(proj string, id int, st *itemState, sp step, agents *int) 
 		*agents++
 	}
 	st.Status, st.Kind, st.Pane, st.Started, st.Attention = "running", sp.kind(), paneID, now(), ""
-	return []event{{Event: "started", Column: st.Column, Step: ptr(st.Step), Kind: st.Kind}}
+	st.StepHarness = ""
+	if harness != rawHarness {
+		st.StepHarness = harness
+	}
+	e := event{Event: "started", Column: st.Column, Step: ptr(st.Step), Kind: st.Kind}
+	if harness != rawHarness {
+		e.Message = harness + " session " + st.Session
+	}
+	return []event{e}
 }
 
 func (s *store) saveRun(proj string, id int, st *itemState, p pane) string {
@@ -367,6 +419,11 @@ func (s *store) saveRun(proj string, id int, st *itemState, p pane) string {
 	if err := writeFile(path, []byte(strings.Join(lines, "\n")+"\n")); err != nil {
 		log.Print("runner: ", err)
 		return ""
+	}
+	if st.StepHarness != "" && st.Transcript != "" {
+		if turns, _, err := readTranscript(st.Harness, st.Transcript); err == nil {
+			writeFile(strings.TrimSuffix(path, ".log")+".md", []byte(transcriptMarkdown(turns, st.Started)))
+		}
 	}
 	return name
 }

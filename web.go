@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"embed"
@@ -22,6 +23,8 @@ import (
 	"github.com/coder/websocket"
 	"github.com/creack/pty"
 	"github.com/fsnotify/fsnotify"
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/extension"
 )
 
 //go:embed web
@@ -80,6 +83,26 @@ type page struct {
 	Term       string
 	Feed       feedView
 	Waited     string
+	Turns      []turnView
+	Tokens     string
+}
+
+type turnView struct {
+	Role  string
+	HTML  template.HTML
+	Tools []toolCall
+}
+
+var markdown = goldmark.New(goldmark.WithExtensions(extension.GFM))
+
+func renderTurns(turns []turn) []turnView {
+	views := make([]turnView, 0, len(turns))
+	for _, t := range turns {
+		var b bytes.Buffer
+		markdown.Convert([]byte(t.Text), &b)
+		views = append(views, turnView{Role: t.Role, HTML: template.HTML(b.String()), Tools: t.Tools})
+	}
+	return views
 }
 
 func newWeb(s *store, token string) (*web, error) {
@@ -203,6 +226,12 @@ func (wb *web) page(view string) http.HandlerFunc {
 				slices.Reverse(p.Runs)
 			}
 			p.Term = "/term/item/" + strconv.Itoa(id)
+			if err == nil && p.Item.Transcript != "" {
+				if turns, _, terr := readTranscript(p.Item.Harness, p.Item.Transcript); terr == nil {
+					p.Turns = renderTurns(turns)
+				}
+			}
+			p.Tokens = tokens(p.Item.Context, p.Item.Output)
 		case "feed":
 			p.Feed, err = wb.s.feed(time.Now())
 		case "terminal":

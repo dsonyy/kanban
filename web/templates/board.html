@@ -5,9 +5,10 @@
     <h2><span>{{.Name}}</span><span class="count">{{len .Items}}</span></h2>
     <div class="cards">
       {{range .Items}}
-      <a class="card status-{{.Status}}{{if .Attention}} attention{{end}}" draggable="true" data-id="{{.ID}}" href="/ui/{{$.Project}}/item/{{.ID}}">
+      <a class="card status-{{.Status}}{{if .Attention}} attention{{end}}{{if .Live}} live{{end}}" draggable="true" data-id="{{.ID}}" href="/ui/{{$.Project}}/item/{{.ID}}">
         <span class="line">{{.Line}}</span>
         <span class="meta"><span>#{{.ID}}</span>{{if and (ne .Status "done") (ne .Status "pending")}}<span>{{.Status}}</span>{{end}}</span>
+        {{if and .Live .Tokens}}<span class="meta tokens">{{.Tokens}}</span>{{end}}
         {{if .Attention}}<span class="flag">{{.Attention}}</span>{{end}}
       </a>
       {{end}}

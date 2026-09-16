@@ -8,6 +8,8 @@
         <div><dt>step</dt><dd>{{.Item.Step}}</dd></div>
         <div><dt>status</dt><dd class="status-{{.Item.Status}}">{{.Item.Status}}</dd></div>
         <div><dt>waited on you</dt><dd>{{.Waited}}</dd></div>
+        {{if .Item.Harness}}<div><dt>{{.Item.Harness}}</dt><dd>{{.Item.Session}}</dd></div>{{end}}
+        {{if .Tokens}}<div><dt>tokens</dt><dd>{{.Tokens}}</dd></div>{{end}}
       </dl>
     </div>
     {{if .Item.Attention}}<p class="flag block">{{.Item.Attention}}</p>{{end}}
@@ -33,10 +35,28 @@
       {{end}}
     </ol>
 
+    {{if .Turns}}
+    <h2>Transcript</h2>
+    <div class="transcript">
+      {{range $i, $t := .Turns}}
+      <article class="turn {{.Role}}">
+        <header>{{.Role}}</header>
+        {{if .HTML}}<div class="md">{{.HTML}}</div>{{end}}
+        {{range $j, $c := .Tools}}
+        <details class="tool" data-key="tool-{{$i}}-{{$j}}">
+          <summary><b>{{.Name}}</b> {{.Input}}</summary>
+          <pre>{{.Output}}</pre>
+        </details>
+        {{end}}
+      </article>
+      {{end}}
+    </div>
+    {{end}}
+
     <h2>Runs</h2>
     {{if not .Runs}}<p class="muted">No runs yet.</p>{{end}}
     {{range .Runs}}
-    <details class="run" data-run="/item/{{$.Item.ID}}/runs/{{.}}">
+    <details class="run" data-key="{{.}}" data-run="/item/{{$.Item.ID}}/runs/{{.}}">
       <summary>{{.}}</summary>
       <pre></pre>
     </details>

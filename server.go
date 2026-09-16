@@ -34,6 +34,24 @@ type cardView struct {
 	Line      string `yaml:"line"`
 	Status    string `yaml:"status"`
 	Attention string `yaml:"attention,omitempty"`
+	Live      bool   `yaml:"live,omitempty"`
+	Tokens    string `yaml:"tokens,omitempty"`
+}
+
+func tokens(context, output int) string {
+	if context == 0 && output == 0 {
+		return ""
+	}
+	short := func(n int) string {
+		switch {
+		case n >= 1_000_000:
+			return fmt.Sprintf("%.1fM", float64(n)/1e6)
+		case n >= 1000:
+			return fmt.Sprintf("%.1fk", float64(n)/1e3)
+		}
+		return strconv.Itoa(n)
+	}
+	return "ctx " + short(context) + " · out " + short(output)
 }
 
 type raw []byte
@@ -78,7 +96,10 @@ func serve(home, addr, tmuxName string) error {
 	if err != nil {
 		return err
 	}
-	s := &store{home: home, tmux: tmuxName, base: "http://" + addr}
+	s := &store{home: home, tmux: tmuxName, base: "http://" + addr, sizes: map[string]int64{}}
+	if err := s.writeHookSettings(); err != nil {
+		return err
+	}
 	s.url = s.base + "/?token=" + token
 	s.notify = s.push
 	wb, err := newWeb(s, token)
@@ -134,6 +155,12 @@ func dispatch(s *store, q query, r *http.Request) (any, error) {
 		return nil, err
 	}
 	switch {
+	case q.verb == "hook" && len(q.ids) == 0 && len(q.args) == 2:
+		id, err := strconv.Atoi(q.args[1])
+		if err != nil {
+			return nil, badRequest("hook item id %q is not a number", q.args[1])
+		}
+		return s.hook(q.args[0], id, body)
 	case q.has("feed") && q.verb == "":
 		return s.feed(time.Now())
 	case q.has("server"):
@@ -264,7 +291,8 @@ func boardOf(s *store, proj string) (boardView, error) {
 			return boardView{}, err
 		}
 		line, _, _ := strings.Cut(strings.TrimSpace(it.Content), "\n")
-		byColumn[it.Column] = append(byColumn[it.Column], cardView{ID: id, Line: line, Status: it.Status, Attention: it.Attention})
+		byColumn[it.Column] = append(byColumn[it.Column], cardView{ID: id, Line: line, Status: it.Status, Attention: it.Attention,
+			Live: it.Status == "running" && it.Live != "", Tokens: tokens(it.Context, it.Output)})
 	}
 	for _, c := range b.Columns {
 		items := byColumn[c.Name]

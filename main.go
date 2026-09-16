@@ -37,19 +37,30 @@ func main() {
 		}
 		return
 	}
-	q, err := parse(os.Args[1:])
+	args := os.Args[1:]
+	if args[0] == "hook" && len(args) == 2 {
+		args = append(args, os.Getenv("KANBAN_TASK"))
+	}
+	q, err := parse(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "kanban:", err)
+		// Exit code 2 from a Claude Code hook blocks the agent.
+		if args[0] == "hook" {
+			os.Exit(1)
+		}
 		os.Exit(2)
 	}
 	var body io.Reader
 	if q.takesBody() {
 		// Only a pipe or a file: agent shells often hand over a socket that never closes.
-		if st, err := os.Stdin.Stat(); err == nil && (st.Mode()&os.ModeNamedPipe != 0 || st.Mode().IsRegular()) {
+		// Harnesses deliver hook payloads over a socket they do close, so hooks read anything but a terminal.
+		st, err := os.Stdin.Stat()
+		pipeOrFile := err == nil && (st.Mode()&os.ModeNamedPipe != 0 || st.Mode().IsRegular())
+		if pipeOrFile || q.verb == "hook" && err == nil && st.Mode()&os.ModeCharDevice == 0 {
 			body = os.Stdin
 		}
 	}
-	if err := call(home, os.Args[1:], body); err != nil {
+	if err := call(home, args, body); err != nil {
 		fail(err)
 	}
 }
@@ -88,7 +99,12 @@ func call(home string, args []string, body io.Reader) error {
 		}
 		return syscall.Exec(bin, v.Command, os.Environ())
 	}
-	if _, err := io.Copy(os.Stdout, resp.Body); err != nil {
+	out := io.Writer(os.Stdout)
+	// Claude Code feeds hook stdout into the model context, so a successful hook stays silent.
+	if q.verb == "hook" && resp.StatusCode < 400 {
+		out = io.Discard
+	}
+	if _, err := io.Copy(out, resp.Body); err != nil {
 		return err
 	}
 	if resp.StatusCode >= 400 {

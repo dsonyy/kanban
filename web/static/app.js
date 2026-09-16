@@ -38,12 +38,12 @@ if (view?.dataset.sse) {
     }
     busy = true;
     try {
-      const open = [...view.querySelectorAll("details[open]")].map((d) => d.dataset.run);
+      const open = [...view.querySelectorAll("details[open]")].map((d) => d.dataset.key);
       const doc = new DOMParser().parseFromString(await (await fetch(location.href)).text(), "text/html");
       const next = doc.getElementById("view");
       if (next) view.innerHTML = next.innerHTML;
-      for (const run of open) {
-        const d = view.querySelector(`details[data-run="${CSS.escape(run)}"]`);
+      for (const key of open) {
+        const d = view.querySelector(`details[data-key="${CSS.escape(key ?? "")}"]`);
         if (d) d.open = true;
       }
     } finally {

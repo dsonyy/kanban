@@ -34,7 +34,11 @@ func newHarness(t *testing.T) *harness {
 	h.env = append(os.Environ(), "KANBAN_HOME="+h.home, "KANBAN_ADDR="+h.addr, "KANBAN_TMUX="+tmux)
 	t.Cleanup(func() {
 		h.stop()
+		sock, _ := exec.Command("tmux", "-L", tmux, "display", "-p", "#{socket_path}").Output()
 		exec.Command("tmux", "-L", tmux, "kill-server").Run()
+		if path := strings.TrimSpace(string(sock)); path != "" {
+			os.Remove(path)
+		}
 	})
 	return h
 }
@@ -208,7 +212,7 @@ func TestEndToEnd(t *testing.T) {
 }
 
 func socketPair() (*os.File, *os.File, error) {
-	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, 0)
 	if err != nil {
 		return nil, nil, err
 	}
