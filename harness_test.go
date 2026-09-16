@@ -42,6 +42,9 @@ esac
 printf '{"type":"assistant","timestamp":"%s","message":{"id":"m1","role":"assistant","usage":{"input_tokens":10,"cache_creation_input_tokens":1000,"cache_read_input_tokens":35000,"output_tokens":1200},"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"go test ./..."}}]}}\n' "$(now)" >> "$transcript"
 printf '{"type":"user","timestamp":"%s","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok  kanban  1.2s"}]}}\n' "$(now)" >> "$transcript"
 printf '{"type":"assistant","timestamp":"%s","message":{"id":"m2","role":"assistant","usage":{"input_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":36500,"output_tokens":300},"content":[{"type":"text","text":"All **tests pass**.\\n\\n| file | status |\\n|---|---|\\n| a.go | ok |"}]}}\n' "$(now)" >> "$transcript"
+case "$prompt" in
+  *HOLD*) while [ ! -f "$FAKE_DIR/release" ]; do sleep 0.2; done; sleep 60 ;;
+esac
 sleep 5
 printf '{"session_id":"%s","last_assistant_message":"All tests pass."}' "$session" | hook stop
 sleep 60
@@ -302,5 +305,49 @@ func TestTmuxServerKilledMidStep(t *testing.T) {
 	log, _ := h.run("", "item", claudeID, "log")
 	if !strings.Contains(log, "event: recovering") || strings.Contains(log, "event: failed") {
 		t.Fatalf("unexpected recovery log:\n%s", log)
+	}
+}
+
+func TestHooksOutOfOrderAndForged(t *testing.T) {
+	h := newHarness(t)
+	h.fakeAgents()
+	h.start()
+	h.project("demo", "columns:\n  - name: work\n    harness: claude\n    steps:\n      - agent: HOLD\n      - shell: sleep 60\n")
+	id := h.newItem("work", "Hook abuse\n")
+	out := h.waitItem(id, "status: running", "transcript: ")
+	session := strings.TrimSpace(strings.SplitN(strings.SplitN(out, "session: ", 2)[1], "\n", 2)[0])
+
+	hook := func(name, payload string) {
+		cmd := h.cmd("hook", name, id)
+		cmd.Stdin = strings.NewReader(payload)
+		if b, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("hook %s: %v %s", name, err, b)
+		}
+	}
+	hook("notification", `{"session_id":"someone-else","message":"forged"}`)
+	hook("stop", `{"session_id":"someone-else"}`)
+	time.Sleep(time.Second)
+	if out, _ := h.run("", "item", id); strings.Contains(out, "forged") || !strings.Contains(out, "step: 0") {
+		t.Fatalf("hooks from another session changed the step:\n%s", out)
+	}
+
+	done := make(chan struct{})
+	for i := 0; i < 5; i++ {
+		go func() {
+			hook("stop", `{"session_id":"`+session+`"}`)
+			done <- struct{}{}
+		}()
+	}
+	for i := 0; i < 5; i++ {
+		<-done
+	}
+	hook("notification", `{"session_id":"`+session+`","message":"late notification"}`)
+	out = h.waitItem(id, "step: 1", "status: running")
+	if strings.Contains(out, "late notification") {
+		t.Fatalf("notification after stop was applied:\n%s", out)
+	}
+	log, _ := h.run("", "item", id, "log")
+	if n := strings.Count(log, "event: finished"); n != 1 {
+		t.Fatalf("five concurrent stops finished the step %d times:\n%s", n, log)
 	}
 }
