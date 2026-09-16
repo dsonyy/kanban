@@ -178,9 +178,34 @@ textarea { width: 100%; padding: 8px; resize: vertical; display: block; }
 .entry-title:hover, .events a:hover { text-decoration: underline; }
 .events .resolved { color: var(--text-dim); }
 .events .resolved b { color: var(--text-dim); }
-.reply input { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line-strong); border-right: 0; padding: 4px 8px; min-width: 260px; }
+.reply input { min-width: 260px; }
 a.button { display: inline-block; padding: 5px 12px; border: 1px solid var(--line-strong); }
 a.button:hover { border-color: var(--text); color: var(--text-strong); }
+
+.relations { display: flex; flex-direction: column; gap: 6px; }
+.relations > div { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; }
+.rel { display: inline-flex; gap: 4px; align-items: baseline; }
+.rel a:hover { text-decoration: underline; }
+.rel button { padding: 0 5px; border-color: var(--line); color: var(--text-dim); }
+.relations input, .reply input { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line-strong); border-right: 0; padding: 4px 8px; }
+.suggest { display: flex; flex-direction: column; gap: 8px; }
+.suggestion { display: flex; gap: 8px; align-items: flex-start; border: 1px solid var(--line); padding: 8px; }
+.suggestion pre { flex: 1; }
+.md.file { padding: 8px 10px; border-top: 1px solid var(--line); }
+button:disabled { color: var(--text-dim); border-color: var(--line); cursor: default; }
+button.small { padding: 1px 8px; font-size: 12px; }
+.history { grid-column: 1 / -1; }
+.commit { display: flex; gap: 12px; justify-content: space-between; align-items: baseline; flex: 1; min-width: 0; }
+.commit > span { overflow-wrap: anywhere; }
+.graph-view { flex: 1; min-height: 0; overflow: auto; padding: var(--gap); display: flex; flex-direction: column; gap: var(--gap); }
+.graph .edge { stroke: var(--line-strong); stroke-width: 1; }
+.graph rect { fill: var(--surface); stroke: var(--line-strong); }
+.graph .external rect { stroke-dasharray: 4 3; fill: var(--bg); }
+.graph .status-running rect { stroke: var(--text-strong); }
+.graph a:hover rect { stroke: var(--text-strong); }
+.graph text { font: 12px var(--font); }
+.graph .title { fill: var(--text-strong); }
+.graph .meta { fill: var(--text-dim); font-size: 11px; }
 
 .empty { padding: 40px var(--gap); }
 .empty pre { display: inline-block; padding: 8px 12px; border: 1px solid var(--line-strong); }

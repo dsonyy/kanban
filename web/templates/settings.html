@@ -10,5 +10,17 @@
     <textarea name="body" spellcheck="false" wrap="off" class="short">{{.ProjectRaw}}</textarea>
     <div class="editor-actions"><button type="submit">Save project</button></div>
   </form>
+  <section class="history">
+    <h2>History</h2>
+    {{if not .History}}<p class="muted">No changes recorded yet.</p>{{end}}
+    <ol class="events">
+      {{range .History}}
+      <li>
+        <time>{{ago .At}}</time>
+        <span class="commit"><span>{{.Message}}</span> <button data-post="/history/{{.Hash}}/undo" class="small">Undo</button></span>
+      </li>
+      {{end}}
+    </ol>
+  </section>
 </main>
 {{end}}

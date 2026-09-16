@@ -143,6 +143,7 @@ func TestEndToEnd(t *testing.T) {
 			t.Fatalf("kanban %v hung on an open stdin socket", args)
 		}
 	}
+	os.WriteFile(filepath.Join(home, "projects", "demo", "board.yaml"), []byte("columns:\n  - name: backlog\n    steps: []\n  - name: todo\n    steps: []\n  - name: doing\n    steps: []\n  - name: done\n    steps: []\n"), 0o644)
 	out, code = run("", "project", "new", "demo")
 	expect(out, code, 1, "already exists")
 	out, code = run("", "project", "new", "item")

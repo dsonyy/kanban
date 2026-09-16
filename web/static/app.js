@@ -77,6 +77,12 @@ document.addEventListener("submit", (e) => {
   } else if (form.matches("[data-move]")) {
     e.preventDefault();
     act(() => api("POST", `/item/${form.dataset.move}/move/${encodeURIComponent(data.get("column"))}`));
+  } else if (form.matches("[data-link]")) {
+    e.preventDefault();
+    act(async () => {
+      await api("POST", `/item/${form.dataset.link}/link/${encodeURIComponent(data.get("parent"))}`);
+      form.parent.value = "";
+    });
   } else if (form.matches("[data-reply]")) {
     e.preventDefault();
     act(async () => {

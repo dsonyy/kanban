@@ -1,8 +1,10 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +16,29 @@ import (
 )
 
 var taskSession = regexp.MustCompile(`^kanban-[0-9]+$`)
+
+const maxGotos = 20
+
+func (s *store) setupPath(proj string) string { return filepath.Join(s.projectDir(proj), "setup.sh") }
+
+func (s *store) finishSetupScript(proj string) error {
+	b, err := os.ReadFile(s.setupPath(proj))
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if len(lines) > 1 && strings.HasPrefix(lines[0], "```") && strings.HasPrefix(lines[len(lines)-1], "```") {
+		lines = lines[1 : len(lines)-1]
+	}
+	if strings.TrimSpace(strings.Join(lines, "")) == "" {
+		os.Remove(s.setupPath(proj))
+		return errors.New("script is empty")
+	}
+	if err := os.WriteFile(s.setupPath(proj), []byte(strings.Join(lines, "\n")+"\n"), 0o755); err != nil {
+		return err
+	}
+	return os.Chmod(s.setupPath(proj), 0o755)
+}
 
 const (
 	tick        = 500 * time.Millisecond
@@ -245,7 +270,28 @@ func (s *store) advanceStep(proj string, id int, st *itemState, panes map[string
 		case "human":
 			st.Status, st.Kind, st.Attention = "waiting", "human", sp.Human
 			return []event{{Event: "attention", Column: st.Column, Step: ptr(st.Step), Message: sp.Human}}
+		case "setup":
+			script := s.setupPath(proj)
+			if _, err := os.Stat(script); err == nil {
+				return s.start(proj, id, st, col, step{Shell: shq(script)}, agents)
+			}
+			if !st.Generate {
+				st.Status, st.Kind, st.Attention = "waiting", "setup", "No setup script for "+proj+". Approve to let an agent write it."
+				return []event{{Event: "attention", Column: st.Column, Step: ptr(st.Step), Message: st.Attention}}
+			}
+			st.Generate = false
+			if b.Setup.Generate == "" {
+				return fail("setup.generate is not configured in board.yaml", event{})
+			}
+			evs := s.start(proj, id, st, col, step{Shell: b.Setup.Generate}, agents)
+			if st.Status == "running" {
+				st.Kind = "generate"
+			}
+			return evs
 		case "goto":
+			if st.Loops["goto"] >= maxGotos {
+				return fail(fmt.Sprintf("goto loop: %d column changes without a human action", maxGotos), event{})
+			}
 			to := sp.Goto
 			if to == "next" {
 				if i+1 >= len(b.Columns) {
@@ -257,7 +303,13 @@ func (s *store) advanceStep(proj string, id int, st *itemState, panes map[string
 				return fail(fmt.Sprintf("goto %q: no such column", to), event{})
 			}
 			e := event{Event: "moved", From: st.Column, To: to, Message: "goto"}
+			loops := maps.Clone(st.Loops)
+			if loops == nil {
+				loops = map[string]int{}
+			}
+			loops["goto"]++
 			st.enter(to)
+			st.Loops = loops
 			return []event{e}
 		case "shell", "agent":
 			if sp.kind() == "agent" && *agents >= limit {
@@ -266,7 +318,7 @@ func (s *store) advanceStep(proj string, id int, st *itemState, panes map[string
 			}
 			return s.start(proj, id, st, col, sp, agents)
 		}
-		return fail(fmt.Sprintf("step %d must have exactly one of shell, agent, human, goto", st.Step), event{})
+		return fail(fmt.Sprintf("step %d must have exactly one of shell, agent, human, goto, setup", st.Step), event{})
 
 	case "queued":
 		if *agents >= limit {
@@ -301,15 +353,55 @@ func (s *store) advanceStep(proj string, id int, st *itemState, panes map[string
 		if st.Step < len(steps) {
 			sp = steps[st.Step]
 		}
+		stepFailed := func(msg string, e event) []event {
+			if sp.OnFail == "" || st.Kind == "generate" {
+				return fail(msg, e)
+			}
+			key := fmt.Sprintf("%s/%d", st.Column, st.Step)
+			limit := sp.MaxLoops
+			if limit == 0 {
+				limit = 3
+			}
+			if st.Loops[key] >= limit {
+				return fail(fmt.Sprintf("%s (on_fail limit of %d reached)", msg, limit), e)
+			}
+			to := sp.OnFail
+			if to == "next" && i+1 < len(b.Columns) {
+				to = b.Columns[i+1].Name
+			}
+			if !hasColumn(b, to) {
+				return fail(fmt.Sprintf("%s (on_fail column %q does not exist)", msg, sp.OnFail), e)
+			}
+			if st.Kind == "agent" {
+				*agents--
+			}
+			e.Event, e.From, e.To, e.Message = "moved", st.Column, to, "on_fail: "+msg
+			loops := maps.Clone(st.Loops)
+			if loops == nil {
+				loops = map[string]int{}
+			}
+			loops[key]++
+			st.enter(to)
+			st.Loops = loops
+			return []event{e}
+		}
 		took := time.Since(st.Started).Round(time.Second)
 		if p.dead {
 			logPath := s.saveRun(proj, id, st, p)
 			e := event{Kind: st.Kind, Exit: ptr(p.exit), Took: took.String(), Log: logPath}
 			if integrated {
-				return fail(fmt.Sprintf("%s exited before finishing its turn (exit %d)", st.Harness, p.exit), e)
+				return stepFailed(fmt.Sprintf("%s exited before finishing its turn (exit %d)", st.Harness, p.exit), e)
 			}
 			if p.exit != 0 {
-				return fail(fmt.Sprintf("%s step %d exited with %d", st.Kind, st.Step, p.exit), e)
+				return stepFailed(fmt.Sprintf("%s step %d exited with %d", st.Kind, st.Step, p.exit), e)
+			}
+			if st.Kind == "generate" {
+				if err := s.finishSetupScript(proj); err != nil {
+					return fail("setup.generate did not produce a usable script: "+err.Error(), e)
+				}
+				e.Event, e.Column, e.Step, e.Message = "generated", st.Column, ptr(st.Step), s.setupPath(proj)
+				st.Status, st.Kind, st.Pane = "pending", "", ""
+				return []event{e}
 			}
 			if st.Kind == "agent" {
 				*agents--
@@ -320,7 +412,7 @@ func (s *store) advanceStep(proj string, id int, st *itemState, panes map[string
 		}
 		if sp.Timeout > 0 && took > sp.Timeout {
 			logPath := s.saveRun(proj, id, st, p)
-			return fail(fmt.Sprintf("%s step %d timed out after %s", st.Kind, st.Step, sp.Timeout), event{Kind: st.Kind, Took: took.String(), Log: logPath})
+			return stepFailed(fmt.Sprintf("%s step %d timed out after %s", st.Kind, st.Step, sp.Timeout), event{Kind: st.Kind, Took: took.String(), Log: logPath})
 		}
 		idle := sp.Idle
 		if idle == 0 && st.Kind == "agent" && !integrated {
@@ -369,13 +461,18 @@ func (s *store) start(proj string, id int, st *itemState, col column, sp step, a
 		st.Harness, st.Session, st.Recover = harness, session, false
 	}
 	p, _, _ := s.board(proj)
-	err := s.ensureSession(proj, id)
+	err := os.MkdirAll(s.itemPath(proj, id, ".files"), 0o755)
+	if err == nil {
+		err = s.ensureSession(proj, id)
+	}
 	var paneID string
 	if err == nil {
 		paneID, err = s.tmuxCmd("new-window", "-d", "-t", "="+sessionName(id), "-n", stepWindow, "-c", s.workdir(proj, id), "-P", "-F", "#{pane_id}",
 			"-e", "KANBAN_HOME="+s.home,
 			"-e", "KANBAN_TASK="+strconv.Itoa(id),
 			"-e", "KANBAN_TASK_FILE="+s.itemPath(proj, id, ".md"),
+			"-e", "KANBAN_TASK_DIR="+s.itemPath(proj, id, ".files"),
+			"-e", "KANBAN_SETUP="+s.setupPath(proj),
 			"-e", "KANBAN_PROJECT="+proj,
 			"-e", "KANBAN_REPO="+p.Repo,
 			"-e", "KANBAN_WORKTREE="+s.worktree(id),

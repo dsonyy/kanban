@@ -71,20 +71,34 @@ func (h *hub) publish(project string) {
 }
 
 type page struct {
-	Projects   []string
-	Project    string
-	View       string
-	Board      boardView
-	Item       item
-	Events     []event
-	Runs       []string
-	BoardRaw   string
-	ProjectRaw string
-	Term       string
-	Feed       feedView
-	Waited     string
-	Turns      []turnView
-	Tokens     string
+	Projects    []string
+	Project     string
+	View        string
+	Board       boardView
+	Item        item
+	Events      []event
+	Runs        []string
+	BoardRaw    string
+	ProjectRaw  string
+	Term        string
+	Feed        feedView
+	Waited      string
+	Turns       []turnView
+	Tokens      string
+	Graph       template.HTML
+	Parents     []item
+	Children    []item
+	Files       []fileView
+	Suggestions []suggestion
+	Suggesting  bool
+	CanSuggest  bool
+	History     []commit
+}
+
+type fileView struct {
+	Name string
+	HTML template.HTML
+	Text string
 }
 
 type turnView struct {
@@ -114,6 +128,8 @@ func newWeb(s *store, token string) (*web, error) {
 			}
 			return t.Local().Format("2006-01-02 15:04:05")
 		},
+		"add":       func(a, b int) int { return a + b },
+		"firstline": firstLine,
 		"deref": func(p *int) string {
 			if p == nil {
 				return ""
@@ -121,7 +137,7 @@ func newWeb(s *store, token string) (*web, error) {
 			return strconv.Itoa(*p)
 		},
 	}
-	for _, name := range []string{"board", "item", "feed", "terminal", "settings", "empty"} {
+	for _, name := range []string{"board", "item", "feed", "graph", "terminal", "settings", "empty"} {
 		t, err := template.New("").Funcs(funcs).ParseFS(webFS, "web/templates/layout.html", "web/templates/"+name+".html")
 		if err != nil {
 			return nil, err
@@ -139,6 +155,7 @@ func (wb *web) handler(api http.Handler) http.Handler {
 	mux.HandleFunc("GET /ui/{project}", wb.page("board"))
 	mux.HandleFunc("GET /ui/{project}/item/{id}", wb.page("item"))
 	mux.HandleFunc("GET /ui/{project}/feed", wb.page("feed"))
+	mux.HandleFunc("GET /ui/{project}/graph", wb.page("graph"))
 	mux.HandleFunc("GET /ui/{project}/terminal", wb.page("terminal"))
 	mux.HandleFunc("GET /ui/{project}/settings", wb.page("settings"))
 	mux.HandleFunc("GET /sse", wb.sse)
@@ -232,8 +249,15 @@ func (wb *web) page(view string) http.HandlerFunc {
 				}
 			}
 			p.Tokens = tokens(p.Item.Context, p.Item.Output)
+			if err == nil {
+				err = wb.itemExtras(&p, name, id)
+			}
 		case "feed":
 			p.Feed, err = wb.s.feed(time.Now())
+		case "graph":
+			var g graphView
+			g, err = wb.s.graph(name)
+			p.Graph = template.HTML(graphSVG(g))
 		case "terminal":
 			p.Term = "/term/project/" + name
 		case "settings":
@@ -243,6 +267,9 @@ func (wb *web) page(view string) http.HandlerFunc {
 				pr, err = wb.s.projectRaw(name)
 			}
 			p.BoardRaw, p.ProjectRaw = string(b), string(pr)
+			if err == nil {
+				p.History, err = wb.s.history()
+			}
 		}
 		if err != nil {
 			reply(w, err, nil)
@@ -250,6 +277,51 @@ func (wb *web) page(view string) http.HandlerFunc {
 		}
 		wb.render(w, view, p)
 	}
+}
+
+func (wb *web) itemExtras(p *page, proj string, id int) error {
+	all, err := wb.s.allItems()
+	if err != nil {
+		return err
+	}
+	for _, parent := range p.Item.Parents {
+		if it, ok := all[parent]; ok {
+			p.Parents = append(p.Parents, it)
+		}
+	}
+	for _, it := range all {
+		if slices.Contains(it.Parents, id) {
+			p.Children = append(p.Children, it)
+		}
+	}
+	slices.SortFunc(p.Children, func(a, b item) int { return a.ID - b.ID })
+	entries, _ := os.ReadDir(wb.s.itemPath(proj, id, ".files"))
+	for _, e := range entries {
+		if e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(wb.s.itemPath(proj, id, ".files"), e.Name()))
+		if err != nil {
+			continue
+		}
+		f := fileView{Name: e.Name()}
+		if strings.HasSuffix(e.Name(), ".md") {
+			var out bytes.Buffer
+			markdown.Convert(b, &out)
+			f.HTML = template.HTML(out.String())
+		} else {
+			f.Text = string(b[:min(len(b), 200_000)])
+		}
+		p.Files = append(p.Files, f)
+	}
+	if _, b, err := wb.s.board(proj); err == nil {
+		p.CanSuggest = b.Suggest.Command != "" && b.Suggest.To != ""
+	}
+	p.Suggestions, _ = wb.s.suggestions(proj, id)
+	wb.s.suggestMu.Lock()
+	p.Suggesting = wb.s.suggesting[id]
+	wb.s.suggestMu.Unlock()
+	return nil
 }
 
 func (wb *web) render(w http.ResponseWriter, name string, p page) {

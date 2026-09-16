@@ -96,10 +96,14 @@ func serve(home, addr, tmuxName string) error {
 	if err != nil {
 		return err
 	}
-	s := &store{home: home, tmux: tmuxName, base: "http://" + addr, sizes: map[string]int64{}}
+	s := &store{home: home, tmux: tmuxName, base: "http://" + addr, sizes: map[string]int64{}, suggesting: map[int]bool{}}
 	if err := s.writeHookSettings(); err != nil {
 		return err
 	}
+	if err := s.initHistory(); err != nil {
+		return err
+	}
+	go s.commitLoop()
 	s.url = s.base + "/?token=" + token
 	s.notify = s.push
 	wb, err := newWeb(s, token)
@@ -161,6 +165,10 @@ func dispatch(s *store, q query, r *http.Request) (any, error) {
 			return nil, badRequest("hook item id %q is not a number", q.args[1])
 		}
 		return s.hook(q.args[0], id, body)
+	case q.has("history") && q.ids["history"] == "" && q.verb == "":
+		return s.history()
+	case q.has("history") && q.ids["history"] != "" && q.verb == "undo" && len(q.args) == 0:
+		return s.undo(q.ids["history"])
 	case q.has("feed") && q.verb == "":
 		return s.feed(time.Now())
 	case q.has("server"):
@@ -183,6 +191,12 @@ func dispatch(s *store, q query, r *http.Request) (any, error) {
 			b, err := s.boardRaw(name)
 			return raw(b), err
 		}
+	case q.ids["project"] != "" && q.verb == "graph" && len(q.args) == 0:
+		name, err := s.resolveProject(q.ids["project"])
+		if err != nil {
+			return nil, err
+		}
+		return s.graph(name)
 	case q.ids["project"] != "" && q.verb == "edit":
 		name, err := s.resolveProject(q.ids["project"])
 		if err != nil {
@@ -265,6 +279,16 @@ func dispatchItem(s *store, q query, body []byte) (any, error) {
 		return s.retry(proj, id)
 	case q.verb == "reply" && len(q.args) == 0:
 		return s.reply(proj, id, body)
+	case q.verb == "link" && len(q.args) == 1:
+		return s.link(proj, id, q.args[0], true)
+	case q.verb == "unlink" && len(q.args) == 1:
+		return s.link(proj, id, q.args[0], false)
+	case q.verb == "suggest" && len(q.args) == 0:
+		return s.suggest(proj, id)
+	case q.verb == "suggestions" && len(q.args) == 0:
+		return s.suggestions(proj, id)
+	case q.verb == "accept" && len(q.args) == 1:
+		return s.accept(proj, id, q.args[0])
 	case q.verb == "attach" && len(q.args) == 0:
 		if err := s.ensureSession(proj, id); err != nil {
 			return nil, err

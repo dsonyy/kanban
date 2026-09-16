@@ -1,0 +1,7 @@
+{{define "view"}}
+<main id="view" class="graph-view" data-sse="change">
+  {{if not .Graph}}<p class="muted">No tasks.</p>{{end}}
+  <p class="muted">Relations are set per task with <code>kanban item &lt;id&gt; link &lt;parent&gt;</code> or on the task page. They do not block anything.</p>
+  {{.Graph}}
+</main>
+{{end}}

@@ -6,20 +6,27 @@ import (
 	"strings"
 )
 
-var resources = []string{"server", "feed", "project", "board", "item"}
+var resources = []string{"server", "feed", "history", "project", "board", "item"}
 
 var verbs = map[string]struct{ post, exec bool }{
-	"new":     {post: true},
-	"edit":    {post: true},
-	"move":    {post: true},
-	"archive": {post: true},
-	"approve": {post: true},
-	"retry":   {post: true},
-	"reply":   {post: true},
-	"hook":    {post: true},
-	"log":     {},
-	"runs":    {},
-	"attach":  {exec: true},
+	"new":         {post: true},
+	"edit":        {post: true},
+	"move":        {post: true},
+	"archive":     {post: true},
+	"approve":     {post: true},
+	"retry":       {post: true},
+	"reply":       {post: true},
+	"hook":        {post: true},
+	"undo":        {post: true},
+	"link":        {post: true},
+	"unlink":      {post: true},
+	"suggest":     {post: true},
+	"accept":      {post: true},
+	"graph":       {},
+	"suggestions": {},
+	"log":         {},
+	"runs":        {},
+	"attach":      {exec: true},
 }
 
 type query struct {

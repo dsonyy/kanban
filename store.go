@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,6 +31,10 @@ type store struct {
 	base   string
 	notify func(proj string, id int, e event)
 	sizes  map[string]int64
+	gitMu  sync.Mutex
+
+	suggestMu  sync.Mutex
+	suggesting map[int]bool
 	// ponytail: one lock for all writes, per-project locks if agents ever contend on it
 	mu sync.Mutex
 }
@@ -45,15 +50,18 @@ type column struct {
 }
 
 type step struct {
-	Shell   string        `yaml:"shell,omitempty"`
-	Agent   string        `yaml:"agent,omitempty"`
-	Human   string        `yaml:"human,omitempty"`
-	Goto    string        `yaml:"goto,omitempty"`
-	Timeout time.Duration `yaml:"timeout,omitempty"`
-	Idle    time.Duration `yaml:"idle,omitempty"`
-	Harness string        `yaml:"harness,omitempty"`
-	Args    []string      `yaml:"args,omitempty"`
-	Resume  bool          `yaml:"resume,omitempty"`
+	Shell    string        `yaml:"shell,omitempty"`
+	Agent    string        `yaml:"agent,omitempty"`
+	Human    string        `yaml:"human,omitempty"`
+	Goto     string        `yaml:"goto,omitempty"`
+	Setup    bool          `yaml:"setup,omitempty"`
+	OnFail   string        `yaml:"on_fail,omitempty"`
+	MaxLoops int           `yaml:"max_loops,omitempty"`
+	Timeout  time.Duration `yaml:"timeout,omitempty"`
+	Idle     time.Duration `yaml:"idle,omitempty"`
+	Harness  string        `yaml:"harness,omitempty"`
+	Args     []string      `yaml:"args,omitempty"`
+	Resume   bool          `yaml:"resume,omitempty"`
 }
 
 func (s step) kind() string {
@@ -63,6 +71,9 @@ func (s step) kind() string {
 			kinds = append(kinds, kind)
 		}
 	}
+	if s.Setup {
+		kinds = append(kinds, "setup")
+	}
 	if len(kinds) != 1 {
 		return ""
 	}
@@ -70,6 +81,13 @@ func (s step) kind() string {
 }
 
 type board struct {
+	Setup struct {
+		Generate string `yaml:"generate,omitempty"`
+	} `yaml:"setup,omitempty"`
+	Suggest struct {
+		To      string `yaml:"to,omitempty"`
+		Command string `yaml:"command,omitempty"`
+	} `yaml:"suggest,omitempty"`
 	Columns []column `yaml:"columns"`
 }
 
@@ -90,12 +108,16 @@ type itemState struct {
 	Output     int       `yaml:"output,omitempty"`
 	Recover    bool      `yaml:"recover,omitempty"`
 	// Harness of the running step; Harness above is the harness of the last session, kept for resume.
-	StepHarness string `yaml:"step_harness,omitempty"`
+	StepHarness string         `yaml:"step_harness,omitempty"`
+	Generate    bool           `yaml:"generate,omitempty"`
+	Loops       map[string]int `yaml:"loops,omitempty"`
+	Parents     []int          `yaml:"parents,omitempty"`
 }
 
 func (st *itemState) enter(col string) {
 	*st = itemState{Column: col, Created: st.Created, Status: "pending", Ran: col,
-		Harness: st.Harness, Session: st.Session, Transcript: st.Transcript, Context: st.Context, Output: st.Output}
+		Harness: st.Harness, Session: st.Session, Transcript: st.Transcript, Context: st.Context, Output: st.Output,
+		Loops: st.Loops, Parents: st.Parents}
 }
 
 type event struct {
@@ -125,6 +147,7 @@ type item struct {
 	Context    int       `yaml:"context,omitempty"`
 	Output     int       `yaml:"output,omitempty"`
 	Live       string    `yaml:"step_harness,omitempty"`
+	Parents    []int     `yaml:"parents,omitempty"`
 	Created    time.Time `yaml:"created"`
 	Content    string    `yaml:"content"`
 }
@@ -205,14 +228,10 @@ func (s *store) createProject(name, repo string) error {
 	if err := os.MkdirAll(filepath.Join(dir, "items"), 0o755); err != nil {
 		return err
 	}
-	b := board{}
-	for _, c := range []string{"backlog", "todo", "doing", "done"} {
-		b.Columns = append(b.Columns, column{Name: c, Steps: []step{}})
-	}
 	if err := writeYAML(filepath.Join(dir, "project.yaml"), project{Repo: repo}); err != nil {
 		return err
 	}
-	if err := writeYAML(filepath.Join(dir, "board.yaml"), b); err != nil {
+	if err := writeFile(filepath.Join(dir, "board.yaml"), []byte(defaultBoard)); err != nil {
 		return err
 	}
 	return s.setLastProject(name)
@@ -279,7 +298,7 @@ func (s *store) item(proj string, id int) (item, error) {
 	}
 	return item{ID: id, Project: proj, Column: st.Column, Step: st.Step, Status: st.Status, Attention: st.Attention,
 		Harness: st.Harness, Session: st.Session, Transcript: st.Transcript, Context: st.Context, Output: st.Output,
-		Live: st.StepHarness, Created: st.Created, Content: string(content)}, nil
+		Live: st.StepHarness, Parents: st.Parents, Created: st.Created, Content: string(content)}, nil
 }
 
 func (s *store) createItem(proj, col string, content []byte) (item, error) {
@@ -367,6 +386,7 @@ func (s *store) moveItem(proj string, id int, to string) (item, error) {
 	return s.transition(proj, id, func(st *itemState) (event, error) {
 		e := event{Event: "moved", From: st.Column, To: to}
 		st.enter(to)
+		st.Loops = nil
 		return e, nil
 	})
 }
@@ -377,6 +397,11 @@ func (s *store) approve(proj string, id int) (item, error) {
 			return event{}, badRequest("item %d is %s, not waiting for approval", id, st.Status)
 		}
 		e := event{Event: "approved", Column: st.Column, Step: ptr(st.Step)}
+		st.Loops = nil
+		if st.Kind == "setup" {
+			st.Status, st.Attention, st.Generate = "pending", "", true
+			return e, nil
+		}
 		st.Step, st.Status, st.Attention = st.Step+1, "pending", ""
 		return e, nil
 	})
@@ -388,7 +413,7 @@ func (s *store) retry(proj string, id int) (item, error) {
 			return event{}, badRequest("item %d is %s, only failed items can be retried", id, st.Status)
 		}
 		e := event{Event: "retried", Column: st.Column, Step: ptr(st.Step)}
-		st.Status, st.Kind, st.Pane, st.Attention = "pending", "", "", ""
+		st.Status, st.Kind, st.Pane, st.Attention, st.Loops = "pending", "", "", "", nil
 		return e, nil
 	})
 }
@@ -411,12 +436,12 @@ func (s *store) update(proj string, id int, fn func(*itemState) ([]event, error)
 	if err := readYAML(s.itemPath(proj, id, ".yaml"), &st); err != nil {
 		return err
 	}
-	before := st
+	before, _ := yaml.Marshal(st)
 	evs, err := fn(&st)
 	if err != nil {
 		return err
 	}
-	if st != before {
+	if after, _ := yaml.Marshal(st); !bytes.Equal(before, after) {
 		if err := writeYAML(s.itemPath(proj, id, ".yaml"), st); err != nil {
 			return err
 		}
@@ -485,7 +510,7 @@ func (s *store) saveBoard(proj string, raw []byte) error {
 		}
 		for i, sp := range c.Steps {
 			if sp.kind() == "" {
-				return badRequest("board.yaml: column %q step %d must have exactly one of shell, agent, human, goto", c.Name, i)
+				return badRequest("board.yaml: column %q step %d must have exactly one of shell, agent, human, goto, setup", c.Name, i)
 			}
 			if !harnesses[sp.Harness] {
 				return badRequest("board.yaml: column %q step %d has unknown harness %q", c.Name, i, sp.Harness)
