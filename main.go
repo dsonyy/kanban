@@ -43,8 +43,9 @@ func main() {
 		os.Exit(2)
 	}
 	var body io.Reader
-	if verbs[q.verb].body {
-		if st, err := os.Stdin.Stat(); err == nil && st.Mode()&os.ModeCharDevice == 0 {
+	if q.takesBody() {
+		// Only a pipe or a file: agent shells often hand over a socket that never closes.
+		if st, err := os.Stdin.Stat(); err == nil && (st.Mode()&os.ModeNamedPipe != 0 || st.Mode().IsRegular()) {
 			body = os.Stdin
 		}
 	}

@@ -1,0 +1,59 @@
+{{define "view"}}
+<div class="item-page">
+  <main id="view" class="item" data-sse="change-{{.Project}}">
+    <div class="item-head">
+      <h1>#{{.Item.ID}}</h1>
+      <dl class="state">
+        <div><dt>column</dt><dd>{{.Item.Column}}</dd></div>
+        <div><dt>step</dt><dd>{{.Item.Step}}</dd></div>
+        <div><dt>status</dt><dd class="status-{{.Item.Status}}">{{.Item.Status}}</dd></div>
+      </dl>
+    </div>
+    {{if .Item.Attention}}<p class="flag block">{{.Item.Attention}}</p>{{end}}
+    <div class="actions">
+      {{if eq .Item.Status "waiting"}}<button data-post="/item/{{.Item.ID}}/approve" class="primary">Approve</button>{{end}}
+      {{if eq .Item.Status "failed"}}<button data-post="/item/{{.Item.ID}}/retry" class="primary">Retry</button>{{end}}
+      <form data-move="{{.Item.ID}}" class="inline">
+        <select name="column" aria-label="Move to column">
+          {{range .Board.Columns}}<option{{if eq .Name $.Item.Column}} selected{{end}}>{{.Name}}</option>{{end}}
+        </select>
+        <button type="submit">Move</button>
+      </form>
+      {{if ne .Item.Column "archive"}}<button data-post="/item/{{.Item.ID}}/archive">Archive</button>{{end}}
+    </div>
+
+    <h2>Events</h2>
+    <ol class="events">
+      {{range .Events}}
+      <li>
+        <time>{{ago .At}}</time>
+        <span><b>{{.Event}}</b>{{if .From}} {{.From}} → {{.To}}{{else if .To}} {{.To}}{{end}}{{if .Column}} {{.Column}}{{end}}{{with deref .Step}} · step {{.}}{{end}}{{if .Kind}} · {{.Kind}}{{end}}{{with deref .Exit}} · exit {{.}}{{end}}{{if .Took}} · {{.Took}}{{end}}{{if and .Message (ne .Event "failed")}} · {{.Message}}{{end}}</span>
+      </li>
+      {{end}}
+    </ol>
+
+    <h2>Runs</h2>
+    {{if not .Runs}}<p class="muted">No runs yet.</p>{{end}}
+    {{range .Runs}}
+    <details class="run" data-run="/item/{{$.Item.ID}}/runs/{{.}}">
+      <summary>{{.}}</summary>
+      <pre></pre>
+    </details>
+    {{end}}
+  </main>
+
+  <aside class="item-side">
+    <section class="term-panel">
+      <h2>Session</h2>
+      <div class="term" data-term="{{.Term}}" data-lazy>
+        <button type="button" data-open-term>Open terminal</button>
+      </div>
+    </section>
+    <form class="content" data-edit-item="{{.Item.ID}}">
+      <h2>Content</h2>
+      <textarea name="content" rows="6">{{.Item.Content}}</textarea>
+      <div class="editor-actions"><button type="submit">Save</button></div>
+    </form>
+  </aside>
+</div>
+{{end}}

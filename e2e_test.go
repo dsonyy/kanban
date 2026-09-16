@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -107,8 +108,32 @@ func TestEndToEnd(t *testing.T) {
 	out, code = run("")
 	expect(out, code, 0, "already running", "pid:")
 
-	out, code = run("", "project", "new", "demo")
-	expect(out, code, 0, "project: demo", "repo: "+repo, "name: backlog")
+	stdinSocket, peer, err := socketPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdinSocket.Close()
+	defer peer.Close()
+	for _, args := range [][]string{{"project", "new", "demo"}, {"item", "new"}} {
+		cmd := exec.Command(h.bin, args...)
+		cmd.Env, cmd.Dir, cmd.Stdin = h.env, repo, stdinSocket
+		done := make(chan []byte, 1)
+		go func() {
+			out, _ := cmd.CombinedOutput()
+			done <- out
+		}()
+		select {
+		case out := <-done:
+			if args[0] == "project" {
+				expect(string(out), cmd.ProcessState.ExitCode(), 0, "project: demo", "repo: "+repo, "name: backlog")
+			} else {
+				expect(string(out), cmd.ProcessState.ExitCode(), 1, "content is empty")
+			}
+		case <-time.After(5 * time.Second):
+			cmd.Process.Kill()
+			t.Fatalf("kanban %v hung on an open stdin socket", args)
+		}
+	}
 	out, code = run("", "project", "new", "demo")
 	expect(out, code, 1, "already exists")
 	out, code = run("", "project", "new", "item")
@@ -175,4 +200,12 @@ func TestEndToEnd(t *testing.T) {
 	if c := get("Bearer " + strings.TrimSpace(string(token))); c != 200 {
 		t.Fatalf("tcp with token: %d", c)
 	}
+}
+
+func socketPair() (*os.File, *os.File, error) {
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	return os.NewFile(uintptr(fds[0]), "stdin"), os.NewFile(uintptr(fds[1]), "peer"), nil
 }

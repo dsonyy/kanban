@@ -45,6 +45,11 @@ func (h *harness) tmuxPanes() string {
 	return string(out)
 }
 
+func (h *harness) tmuxOut(args ...string) (string, error) {
+	out, err := exec.Command("tmux", append([]string{"-L", h.tmux()}, args...)...).CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
 func (h *harness) tmux() string {
 	for _, e := range h.env {
 		if v, ok := strings.CutPrefix(e, "KANBAN_TMUX="); ok {

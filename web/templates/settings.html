@@ -1,0 +1,14 @@
+{{define "view"}}
+<main class="settings">
+  <form data-save="/project/{{.Project}}/board/edit">
+    <h2>board.yaml</h2>
+    <textarea name="body" spellcheck="false" wrap="off">{{.BoardRaw}}</textarea>
+    <div class="editor-actions"><button type="submit">Save board</button></div>
+  </form>
+  <form data-save="/project/{{.Project}}/edit">
+    <h2>project.yaml</h2>
+    <textarea name="body" spellcheck="false" wrap="off" class="short">{{.ProjectRaw}}</textarea>
+    <div class="editor-actions"><button type="submit">Save project</button></div>
+  </form>
+</main>
+{{end}}

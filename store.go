@@ -25,6 +25,7 @@ var (
 type store struct {
 	home string
 	tmux string
+	url  string
 	// ponytail: one lock for all writes, per-project locks if agents ever contend on it
 	mu sync.Mutex
 }
@@ -73,6 +74,7 @@ type itemState struct {
 	Pane      string    `yaml:"pane,omitempty"`
 	Started   time.Time `yaml:"started,omitempty"`
 	Attention string    `yaml:"attention,omitempty"`
+	Ran       string    `yaml:"ran,omitempty"`
 }
 
 type event struct {
@@ -275,7 +277,7 @@ func (s *store) createItem(proj, col string, content []byte) (item, error) {
 	if err := writeFile(s.itemPath(proj, id, ".md"), content); err != nil {
 		return item{}, err
 	}
-	if err := writeYAML(s.itemPath(proj, id, ".yaml"), itemState{Column: col, Created: now(), Status: "pending"}); err != nil {
+	if err := writeYAML(s.itemPath(proj, id, ".yaml"), itemState{Column: col, Created: now(), Status: "pending", Ran: col}); err != nil {
 		return item{}, err
 	}
 	if err := s.logEvent(proj, id, event{At: now(), Event: "created", To: col}); err != nil {
@@ -333,7 +335,7 @@ func (s *store) moveItem(proj string, id int, to string) (item, error) {
 	}
 	return s.transition(proj, id, func(st *itemState) (event, error) {
 		e := event{Event: "moved", From: st.Column, To: to}
-		*st = itemState{Column: to, Created: st.Created, Status: "pending"}
+		*st = itemState{Column: to, Created: st.Created, Status: "pending", Ran: to}
 		return e, nil
 	})
 }
@@ -400,6 +402,82 @@ func (s *store) update(proj string, id int, fn func(*itemState) ([]event, error)
 }
 
 func ptr[T any](v T) *T { return &v }
+
+func (s *store) boardRaw(proj string) ([]byte, error) {
+	return os.ReadFile(filepath.Join(s.projectDir(proj), "board.yaml"))
+}
+
+func (s *store) saveBoard(proj string, raw []byte) error {
+	var b board
+	if err := yaml.Unmarshal(raw, &b); err != nil {
+		return badRequest("board.yaml: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, c := range b.Columns {
+		switch {
+		case c.Name == "":
+			return badRequest("board.yaml: column without a name")
+		case c.Name == archive:
+			return badRequest("board.yaml: column name %q is reserved", archive)
+		case seen[c.Name]:
+			return badRequest("board.yaml: column %q defined twice", c.Name)
+		}
+		seen[c.Name] = true
+		for i, sp := range c.Steps {
+			if sp.kind() == "" {
+				return badRequest("board.yaml: column %q step %d must have exactly one of shell, agent, human, goto", c.Name, i)
+			}
+		}
+	}
+	if len(b.Columns) == 0 {
+		return badRequest("board.yaml: no columns")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return writeFile(filepath.Join(s.projectDir(proj), "board.yaml"), raw)
+}
+
+func (s *store) projectRaw(proj string) ([]byte, error) {
+	return os.ReadFile(filepath.Join(s.projectDir(proj), "project.yaml"))
+}
+
+func (s *store) saveProject(proj string, raw []byte) error {
+	var p project
+	if err := yaml.Unmarshal(raw, &p); err != nil {
+		return badRequest("project.yaml: %v", err)
+	}
+	if p.Repo == "" {
+		return badRequest("project.yaml: repo is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return writeFile(filepath.Join(s.projectDir(proj), "project.yaml"), raw)
+}
+
+func (s *store) runs(proj string, id int) ([]string, error) {
+	entries, err := os.ReadDir(s.itemPath(proj, id, ".runs"))
+	names := []string{}
+	if errors.Is(err, os.ErrNotExist) {
+		return names, nil
+	}
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), ".") {
+			names = append(names, e.Name())
+		}
+	}
+	return names, err
+}
+
+func (s *store) runLog(proj string, id int, name string) ([]byte, error) {
+	if filepath.Base(name) != name || strings.HasPrefix(name, ".") {
+		return nil, badRequest("invalid run name %q", name)
+	}
+	b, err := os.ReadFile(filepath.Join(s.itemPath(proj, id, ".runs"), name))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("run %q: %w", name, errNotFound)
+	}
+	return b, err
+}
 
 func (s *store) config() config {
 	c := config{Agents: 3}

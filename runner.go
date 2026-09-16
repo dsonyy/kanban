@@ -6,11 +6,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 )
+
+var taskSession = regexp.MustCompile(`^kanban-[0-9]+$`)
 
 const (
 	tick        = 500 * time.Millisecond
@@ -84,14 +87,19 @@ func (s *store) workdir(proj string, id int) string {
 }
 
 func (s *store) ensureSession(proj string, id int) error {
-	if _, err := s.tmuxCmd("has-session", "-t", "="+sessionName(id)); err == nil {
+	return s.ensureTmux(sessionName(id), s.workdir(proj, id))
+}
+
+func (s *store) ensureTmux(session, dir string) error {
+	if _, err := s.tmuxCmd("has-session", "-t", "="+session); err == nil {
 		return nil
 	}
-	_, err := s.tmuxCmd("new-session", "-d", "-s", sessionName(id), "-x", "200", "-y", "50", "-c", s.workdir(proj, id),
+	_, err := s.tmuxCmd("new-session", "-d", "-s", session, "-x", "200", "-y", "50", "-c", dir,
 		";", "set", "-g", "remain-on-exit", "on",
 		";", "set", "-g", "mouse", "on",
 		";", "set", "-g", "focus-events", "on",
-		";", "set", "-g", "history-limit", "50000")
+		";", "set", "-g", "history-limit", "50000",
+		";", "set", "-g", "status-left-length", "40")
 	return err
 }
 
@@ -154,7 +162,7 @@ func (s *store) reconcile() error {
 
 	killedSessions := map[string]bool{}
 	for _, p := range panes {
-		if !strings.HasPrefix(p.session, "kanban-") {
+		if !taskSession.MatchString(p.session) {
 			continue
 		}
 		if !keepSessions[p.session] && !killedSessions[p.session] {
@@ -172,6 +180,16 @@ func (s *store) reconcile() error {
 func (s *store) advance(proj string, id int, st *itemState, panes map[string]pane, agents *int, limit int) []event {
 	if st.Column == archive {
 		return nil
+	}
+	if st.Ran == "" {
+		st.Ran = st.Column
+	} else if st.Ran != st.Column {
+		if st.Status == "running" && st.Kind == "agent" {
+			*agents--
+		}
+		e := event{Event: "moved", From: st.Ran, To: st.Column, Message: "external"}
+		*st = itemState{Column: st.Column, Created: st.Created, Status: "pending", Ran: st.Column}
+		return []event{e}
 	}
 	fail := func(msg string, e event) []event {
 		if st.Status == "running" && st.Kind == "agent" {
@@ -229,7 +247,7 @@ func (s *store) advance(proj string, id int, st *itemState, panes map[string]pan
 				return fail(fmt.Sprintf("goto %q: no such column", to), event{})
 			}
 			e := event{Event: "moved", From: st.Column, To: to, Message: "goto"}
-			*st = itemState{Column: to, Created: st.Created, Status: "pending"}
+			*st = itemState{Column: to, Created: st.Created, Status: "pending", Ran: to}
 			return []event{e}
 		case "shell", "agent":
 			if sp.kind() == "agent" && *agents >= limit {

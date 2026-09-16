@@ -1,0 +1,27 @@
+{{define "view"}}
+<main id="view" class="board" data-sse="change-{{.Project}}">
+  {{range .Board.Columns}}
+  <section class="column" data-column="{{.Name}}">
+    <h2><span>{{.Name}}</span><span class="count">{{len .Items}}</span></h2>
+    <div class="cards">
+      {{range .Items}}
+      <a class="card status-{{.Status}}{{if .Attention}} attention{{end}}" draggable="true" data-id="{{.ID}}" href="/ui/{{$.Project}}/item/{{.ID}}">
+        <span class="line">{{.Line}}</span>
+        <span class="meta"><span>#{{.ID}}</span>{{if and (ne .Status "done") (ne .Status "pending")}}<span>{{.Status}}</span>{{end}}</span>
+        {{if .Attention}}<span class="flag">{{.Attention}}</span>{{end}}
+      </a>
+      {{end}}
+    </div>
+  </section>
+  {{end}}
+</main>
+<form class="editor" data-new-item>
+  <textarea name="content" rows="3" placeholder="New task. The first line becomes the card title. Ctrl+Enter to add." required></textarea>
+  <div class="editor-actions">
+    <select name="column" aria-label="Column">
+      {{range .Board.Columns}}<option>{{.Name}}</option>{{end}}
+    </select>
+    <button type="submit">Add task</button>
+  </div>
+</form>
+{{end}}

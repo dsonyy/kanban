@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -35,6 +34,8 @@ type cardView struct {
 	Status    string `yaml:"status"`
 	Attention string `yaml:"attention,omitempty"`
 }
+
+type raw []byte
 
 type httpError struct {
 	code int
@@ -76,13 +77,20 @@ func serve(home, addr, tmuxName string) error {
 	if err != nil {
 		return err
 	}
-	s := &store{home: home, tmux: tmuxName}
+	s := &store{home: home, tmux: tmuxName, url: "http://" + addr + "/?token=" + token}
+	wb, err := newWeb(s, token)
+	if err != nil {
+		return err
+	}
+	if err := s.watch(&wb.hub); err != nil {
+		return err
+	}
 	go s.run()
 	h := handler(s)
 	errc := make(chan error, 2)
 	go func() { errc <- http.Serve(unixLn, h) }()
-	go func() { errc <- http.Serve(tcpLn, withToken(token, h)) }()
-	fmt.Printf("kanban server pid %d, socket %s, http %s\n", os.Getpid(), sock, addr)
+	go func() { errc <- http.Serve(tcpLn, wb.handler(h)) }()
+	fmt.Printf("kanban server pid %d, socket %s\nweb: %s\n", os.Getpid(), sock, s.url)
 	return <-errc
 }
 
@@ -99,17 +107,6 @@ func loadToken(home string) (string, error) {
 	rand.Read(raw)
 	token := hex.EncodeToString(raw)
 	return token, os.WriteFile(path, []byte(token+"\n"), 0o600)
-}
-
-func withToken(token string, h http.Handler) http.Handler {
-	want := []byte("Bearer " + token)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), want) != 1 {
-			reply(w, httpError{http.StatusUnauthorized, errors.New("missing or invalid token")}, nil)
-			return
-		}
-		h.ServeHTTP(w, r)
-	})
 }
 
 func handler(s *store) http.Handler {
@@ -135,9 +132,35 @@ func dispatch(s *store, q query, r *http.Request) (any, error) {
 	}
 	switch {
 	case q.has("server"):
-		return map[string]int{"pid": os.Getpid()}, nil
+		return map[string]any{"pid": os.Getpid(), "url": s.url}, nil
 	case q.has("item"):
 		return dispatchItem(s, q, body)
+	case q.has("board"):
+		name, err := s.resolveProject(q.ids["project"])
+		if err != nil {
+			return nil, err
+		}
+		switch {
+		case q.verb == "" && q.ids["board"] == "":
+			b, err := s.boardRaw(name)
+			return raw(b), err
+		case q.verb == "edit" && q.ids["board"] == "":
+			if err := s.saveBoard(name, body); err != nil {
+				return nil, err
+			}
+			b, err := s.boardRaw(name)
+			return raw(b), err
+		}
+	case q.ids["project"] != "" && q.verb == "edit":
+		name, err := s.resolveProject(q.ids["project"])
+		if err != nil {
+			return nil, err
+		}
+		if err := s.saveProject(name, body); err != nil {
+			return nil, err
+		}
+		b, err := s.projectRaw(name)
+		return raw(b), err
 	case q.ids["project"] == "" && q.verb == "":
 		return s.projects()
 	case q.ids["project"] == "" && q.verb == "new" && len(q.args) == 1:
@@ -193,6 +216,11 @@ func dispatchItem(s *store, q query, body []byte) (any, error) {
 		return s.item(proj, id)
 	case q.verb == "log" && len(q.args) == 0:
 		return s.events(proj, id)
+	case q.verb == "runs" && len(q.args) == 0:
+		return s.runs(proj, id)
+	case q.verb == "runs" && len(q.args) == 1:
+		b, err := s.runLog(proj, id, q.args[0])
+		return raw(b), err
 	case q.verb == "edit" && len(q.args) == 0:
 		return s.editItem(proj, id, body)
 	case q.verb == "move" && len(q.args) == 1:
@@ -254,6 +282,10 @@ func reply(w http.ResponseWriter, err error, v any) {
 		}
 		v = map[string]string{"error": err.Error()}
 		w.WriteHeader(code)
+	}
+	if b, ok := v.(raw); ok {
+		w.Write(b)
+		return
 	}
 	yaml.NewEncoder(w).Encode(v)
 }

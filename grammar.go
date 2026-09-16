@@ -6,16 +6,17 @@ import (
 	"strings"
 )
 
-var resources = []string{"server", "project", "item"}
+var resources = []string{"server", "project", "board", "item"}
 
-var verbs = map[string]struct{ post, body, exec bool }{
-	"new":     {post: true, body: true},
-	"edit":    {post: true, body: true},
+var verbs = map[string]struct{ post, exec bool }{
+	"new":     {post: true},
+	"edit":    {post: true},
 	"move":    {post: true},
 	"archive": {post: true},
 	"approve": {post: true},
 	"retry":   {post: true},
 	"log":     {},
+	"runs":    {},
 	"attach":  {exec: true},
 }
 
@@ -75,6 +76,10 @@ func (q query) path() string {
 		p = append(append(p, q.verb), q.args...)
 	}
 	return "/" + strings.Join(p, "/")
+}
+
+func (q query) takesBody() bool {
+	return q.verb == "edit" || q.verb == "new" && q.has("item")
 }
 
 func (q query) method() string {
