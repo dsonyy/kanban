@@ -1,0 +1,8 @@
+{ "hooks": {
+  "SessionStart": [{"hooks":[{"type":"command","command":"/home/dsonyy/repos/kanban/spike/hooks/dump.sh SessionStart"}]}],
+  "UserPromptSubmit": [{"hooks":[{"type":"command","command":"/home/dsonyy/repos/kanban/spike/hooks/dump.sh UserPromptSubmit"}]}],
+  "PreToolUse": [{"matcher":"*","hooks":[{"type":"command","command":"/home/dsonyy/repos/kanban/spike/hooks/dump.sh PreToolUse"}]}],
+  "Notification": [{"hooks":[{"type":"command","command":"/home/dsonyy/repos/kanban/spike/hooks/dump.sh Notification"}]}],
+  "Stop": [{"hooks":[{"type":"command","command":"/home/dsonyy/repos/kanban/spike/hooks/dump.sh Stop"}]}],
+  "SessionEnd": [{"hooks":[{"type":"command","command":"/home/dsonyy/repos/kanban/spike/hooks/dump.sh SessionEnd"}]}]
+}}

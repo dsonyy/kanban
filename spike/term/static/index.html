@@ -1,0 +1,31 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>term spike</title>
+<style>html,body{margin:0;height:100%;background:#000}#t{height:100%}</style>
+<div id="t"></div>
+<script type="module">
+import { init, Terminal, FitAddon } from "./ghostty-web.js";
+await init();
+const term = new Terminal({ fontSize: 14, theme: { background: "#000" } });
+const fit = new FitAddon();
+term.loadAddon(fit);
+term.open(document.getElementById("t"));
+const s = new URLSearchParams(location.search).get("s") || "spike";
+const ws = new WebSocket(`ws://${location.host}/ws?s=${s}`);
+ws.binaryType = "arraybuffer";
+const resize = () => { fit.fit(); ws.readyState === 1 && ws.send(`resize ${term.cols} ${term.rows}`); };
+ws.onopen = resize;
+ws.onmessage = e => term.write(new Uint8Array(e.data));
+term.onData(d => ws.send(new TextEncoder().encode(d)));
+window.addEventListener("resize", resize);
+term.attachCustomWheelEventHandler(e => {
+  if (!term.hasMouseTracking()) return false;
+  const btn = e.deltaY < 0 ? 64 : 65;
+  const r = document.getElementById("t").getBoundingClientRect();
+  const x = Math.max(1, Math.ceil((e.clientX - r.left) / r.width * term.cols));
+  const y = Math.max(1, Math.ceil((e.clientY - r.top) / r.height * term.rows));
+  ws.send(new TextEncoder().encode(`\x1b[<${btn};${x};${y}M`));
+  return true;
+});
+window.__term = term;
+</script>
