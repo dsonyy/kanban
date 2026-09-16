@@ -31,6 +31,16 @@ func (h *harness) browser() *http.Client {
 	return c
 }
 
+// browserPost sends a POST the way the web UI does, with the page's Origin.
+func (h *harness) browserPost(c *http.Client, path, body string) (*http.Response, error) {
+	req, err := http.NewRequest("POST", "http://"+h.addr+path, strings.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Origin", "http://"+h.addr)
+	return c.Do(req)
+}
+
 func (h *harness) get(c *http.Client, path string) (int, string) {
 	h.t.Helper()
 	resp, err := c.Get("http://" + h.addr + path)
@@ -70,7 +80,7 @@ func TestWebPagesAndAuth(t *testing.T) {
 		t.Fatalf("missing item page: %d", code)
 	}
 
-	resp, err := c.Post("http://"+h.addr+"/item/"+id+"/move/work", "", nil)
+	resp, err := h.browserPost(c, "/item/"+id+"/move/work", "")
 	if err != nil || resp.StatusCode != 200 {
 		t.Fatalf("move with cookie: %v %v", err, resp.Status)
 	}
@@ -79,7 +89,7 @@ func TestWebPagesAndAuth(t *testing.T) {
 
 	boardPath := filepath.Join(h.home, "projects", "demo", "board.yaml")
 	before, _ := os.ReadFile(boardPath)
-	resp, _ = c.Post("http://"+h.addr+"/project/demo/board/edit", "", strings.NewReader("columns:\n  - name: a\n    steps:\n      - goto: next\n        shell: echo\n"))
+	resp, _ = h.browserPost(c, "/project/demo/board/edit", "columns:\n  - name: a\n    steps:\n      - goto: next\n        shell: echo\n")
 	resp.Body.Close()
 	after, _ := os.ReadFile(boardPath)
 	if resp.StatusCode != 400 || string(before) != string(after) {
@@ -241,4 +251,52 @@ func TestTerminalAcceptsLargePaste(t *testing.T) {
 	if ws.Ping(ctx) != nil {
 		t.Fatal("terminal connection closed after the paste")
 	}
+}
+
+func TestCookieWritesRequireSameOrigin(t *testing.T) {
+	h := newHarness(t)
+	h.start()
+	h.project("demo", "columns:\n  - name: backlog\n    steps: []\n")
+	id := h.newItem("backlog", "Target of a cross-site request\n")
+	c := h.browser()
+	post := func(origin string) int {
+		req, _ := http.NewRequest("POST", "http://"+h.addr+"/item/"+id+"/archive", nil)
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		resp, err := c.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	// Another port on the same host is the same site, so SameSite=Strict still sends the cookie.
+	host, _, _ := strings.Cut(h.addr, ":")
+	for _, origin := range []string{"http://" + host + ":3000", "http://evil.example", "null", ""} {
+		if code := post(origin); code != http.StatusForbidden {
+			t.Fatalf("cookie POST with Origin %q: %d", origin, code)
+		}
+	}
+	if out, _ := h.run("", "item", id); strings.Contains(out, "column: archive") {
+		t.Fatal("cross-origin request archived the item")
+	}
+	if code := post("http://" + h.addr); code != http.StatusOK {
+		t.Fatalf("same-origin cookie POST: %d", code)
+	}
+	proxied, _ := http.NewRequest("POST", "http://"+h.addr+"/item/"+id+"/move/backlog", nil)
+	proxied.Header.Set("Origin", "https://box.tailnet.ts.net")
+	proxied.Header.Set("X-Forwarded-Host", "box.tailnet.ts.net")
+	if resp, err := c.Do(proxied); err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("cookie POST through a proxy that rewrites Host: %v %v", err, resp.Status)
+	}
+
+	token, _ := os.ReadFile(filepath.Join(h.home, "token"))
+	req, _ := http.NewRequest("POST", "http://"+h.addr+"/item/"+id+"/move/backlog", nil)
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("bearer POST without Origin: %v %v", err, resp.Status)
+	}
+	resp.Body.Close()
 }

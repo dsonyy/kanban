@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -176,8 +177,22 @@ func (wb *web) auth(h http.Handler) http.Handler {
 			http.Redirect(w, r, r.URL.RequestURI(), http.StatusSeeOther)
 			return
 		}
-		c, err := r.Cookie("kanban_token")
-		if valid(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")) || err == nil && valid(c.Value) {
+		if valid(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")) {
+			h.ServeHTTP(w, r)
+			return
+		}
+		if c, err := r.Cookie("kanban_token"); err == nil && valid(c.Value) {
+			// SameSite ignores ports, so a page on another port of this host still gets the cookie attached.
+			// Browsers send Origin on every POST; a write authorized by the cookie must come from this server's own pages.
+			if r.Method != http.MethodGet && r.Method != http.MethodHead {
+				// Behind tailscale serve the Host may be the local address; a cross-site page cannot set
+				// X-Forwarded-Host without a CORS preflight, which this server never grants.
+				u, err := url.Parse(r.Header.Get("Origin"))
+				if err != nil || u.Host == "" || u.Host != r.Host && u.Host != r.Header.Get("X-Forwarded-Host") {
+					reply(w, httpError{http.StatusForbidden, errors.New("cross-origin request refused")}, nil)
+					return
+				}
+			}
 			h.ServeHTTP(w, r)
 			return
 		}
