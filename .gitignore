@@ -1,0 +1,3 @@
+spike/*/bin/
+*.sock
+kanban
