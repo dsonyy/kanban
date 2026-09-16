@@ -60,6 +60,19 @@ func TestDefaultBoardAndTaskFiles(t *testing.T) {
 	}
 }
 
+func TestBoardRejectsUnreachableColumnNames(t *testing.T) {
+	h := newHarness(t)
+	h.start()
+	h.project("demo", "columns:\n  - name: backlog\n    steps: []\n")
+	for _, name := range []string{"a/b", "next", "archive", " padded"} {
+		cmd := h.cmd("project", "demo", "board", "edit")
+		cmd.Stdin = strings.NewReader("columns:\n  - name: \"" + name + "\"\n    steps: []\n")
+		if out, err := cmd.CombinedOutput(); err == nil {
+			t.Fatalf("column %q accepted:\n%s", name, out)
+		}
+	}
+}
+
 func TestSetupScriptGeneration(t *testing.T) {
 	h := newHarness(t)
 	h.start()

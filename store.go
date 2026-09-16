@@ -525,8 +525,10 @@ func (s *store) saveBoard(proj string, raw []byte) error {
 		switch {
 		case c.Name == "":
 			return badRequest("board.yaml: column without a name")
-		case c.Name == archive:
-			return badRequest("board.yaml: column name %q is reserved", archive)
+		case c.Name == archive || c.Name == "next":
+			return badRequest("board.yaml: column name %q is reserved", c.Name)
+		case strings.ContainsAny(c.Name, "/\\") || strings.TrimSpace(c.Name) != c.Name:
+			return badRequest("board.yaml: column name %q cannot contain slashes or surrounding spaces", c.Name)
 		case seen[c.Name]:
 			return badRequest("board.yaml: column %q defined twice", c.Name)
 		}

@@ -70,7 +70,7 @@ func call(home string, args []string, body io.Reader) error {
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequest(q.method(), "http://kanban"+q.path(), body)
+	req, err := http.NewRequest(q.method(), "http://kanban"+q.escapedPath(), body)
 	if err != nil {
 		return err
 	}

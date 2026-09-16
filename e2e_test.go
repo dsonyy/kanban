@@ -222,3 +222,21 @@ func socketPair() (*os.File, *os.File, error) {
 	}
 	return os.NewFile(uintptr(fds[0]), "stdin"), os.NewFile(uintptr(fds[1]), "peer"), nil
 }
+
+func TestColumnNamesThatNeedEscaping(t *testing.T) {
+	h := newHarness(t)
+	h.start()
+	names := []string{"50%", "q?x#y", "with space", "zażółć", "a+b&c=d"}
+	board := "columns:\n  - name: start\n    steps: []\n"
+	for _, n := range names {
+		board += "  - name: \"" + n + "\"\n    steps: []\n"
+	}
+	h.project("demo", board)
+	id := h.newItem("start", "Travels through odd columns\n")
+	for _, n := range names {
+		out, code := h.run("", "item", id, "move", n)
+		h.expect(out, code, 0, "column: "+n+"\n")
+	}
+	out, code := h.run("", "project", "demo", "item", id)
+	h.expect(out, code, 0, "column: a+b&c=d")
+}

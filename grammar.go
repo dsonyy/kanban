@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net/url"
 	"slices"
 	"strings"
 )
@@ -72,6 +73,19 @@ func reserved(s string) bool {
 }
 
 func (q query) path() string {
+	return "/" + strings.Join(q.segments(), "/")
+}
+
+// escapedPath keeps characters like %, ? and # in column names from breaking the URL.
+func (q query) escapedPath() string {
+	segs := q.segments()
+	for i, s := range segs {
+		segs[i] = url.PathEscape(s)
+	}
+	return "/" + strings.Join(segs, "/")
+}
+
+func (q query) segments() []string {
 	var p []string
 	for _, r := range resources {
 		if id, ok := q.ids[r]; ok {
@@ -84,7 +98,7 @@ func (q query) path() string {
 	if q.verb != "" {
 		p = append(append(p, q.verb), q.args...)
 	}
-	return "/" + strings.Join(p, "/")
+	return p
 }
 
 func (q query) takesBody() bool {
