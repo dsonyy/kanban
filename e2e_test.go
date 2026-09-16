@@ -240,3 +240,32 @@ func TestColumnNamesThatNeedEscaping(t *testing.T) {
 	out, code := h.run("", "project", "demo", "item", id)
 	h.expect(out, code, 0, "column: a+b&c=d")
 }
+
+func TestLargeBodiesAreStoredWholeOrRejected(t *testing.T) {
+	h := newHarness(t)
+	h.start()
+	h.project("demo", "columns:\n  - name: backlog\n    steps: []\n")
+	id := h.newItem("backlog", "Small\n")
+	path := filepath.Join(h.home, "projects", "demo", "items", id+".md")
+
+	big := strings.Repeat("x", 3<<20) + "\n"
+	edit := h.cmd("item", id, "edit")
+	edit.Stdin = strings.NewReader(big)
+	if b, err := edit.CombinedOutput(); err != nil {
+		t.Fatalf("3 MB edit: %v\n%.200s", err, b)
+	}
+	if b, _ := os.ReadFile(path); len(b) != len(big) {
+		t.Fatalf("3 MB content stored as %d bytes", len(b))
+	}
+
+	huge := strings.Repeat("y", 65<<20)
+	edit = h.cmd("item", id, "edit")
+	edit.Stdin = strings.NewReader(huge)
+	out, err := edit.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "too large") {
+		t.Fatalf("65 MB edit was not rejected: %v\n%.200s", err, out)
+	}
+	if b, _ := os.ReadFile(path); len(b) != len(big) {
+		t.Fatalf("rejected edit changed the file to %d bytes", len(b))
+	}
+}

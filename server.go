@@ -56,6 +56,8 @@ func tokens(context, output int) string {
 	return "ctx " + short(context) + " · out " + short(output)
 }
 
+const maxBody = 64 << 20
+
 type raw []byte
 
 type httpError struct {
@@ -158,9 +160,13 @@ func handler(s *store) http.Handler {
 }
 
 func dispatch(s *store, q query, r *http.Request) (any, error) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	// Read one byte past the limit so an oversized body is rejected instead of silently cut.
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBody+1))
 	if err != nil {
 		return nil, err
+	}
+	if len(body) > maxBody {
+		return nil, httpError{http.StatusRequestEntityTooLarge, fmt.Errorf("request body too large, the limit is %d MiB", maxBody>>20)}
 	}
 	switch {
 	case q.verb == "hook" && len(q.ids) == 0 && len(q.args) == 2:
