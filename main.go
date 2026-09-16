@@ -7,7 +7,11 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"syscall"
+
+	"go.yaml.in/yaml/v3"
 )
 
 func main() {
@@ -24,7 +28,11 @@ func main() {
 		if addr == "" {
 			addr = "127.0.0.1:7420"
 		}
-		if err := serve(home, addr); err != nil {
+		tmuxName := os.Getenv("KANBAN_TMUX")
+		if tmuxName == "" {
+			tmuxName = "kanban"
+		}
+		if err := serve(home, addr, tmuxName); err != nil {
 			fail(err)
 		}
 		return
@@ -68,6 +76,17 @@ func call(home string, args []string, body io.Reader) error {
 		return fmt.Errorf("server not running (%s)", sock)
 	}
 	defer resp.Body.Close()
+	if verbs[q.verb].exec && resp.StatusCode < 400 {
+		var v struct{ Command []string }
+		if err := yaml.NewDecoder(resp.Body).Decode(&v); err != nil || len(v.Command) == 0 {
+			return fmt.Errorf("bad %s response: %v", q.verb, err)
+		}
+		bin, err := exec.LookPath(v.Command[0])
+		if err != nil {
+			return err
+		}
+		return syscall.Exec(bin, v.Command, os.Environ())
+	}
 	if _, err := io.Copy(os.Stdout, resp.Body); err != nil {
 		return err
 	}

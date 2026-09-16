@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -11,60 +12,97 @@ import (
 	"time"
 )
 
-func TestEndToEnd(t *testing.T) {
+type harness struct {
+	t                     *testing.T
+	bin, home, repo, addr string
+	env                   []string
+	server                *exec.Cmd
+}
+
+func newHarness(t *testing.T) *harness {
 	dir := t.TempDir()
-	bin := filepath.Join(dir, "kanban")
-	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+	h := &harness{t: t, bin: filepath.Join(dir, "kanban"), home: filepath.Join(dir, "home"), repo: filepath.Join(dir, "repo")}
+	if out, err := exec.Command("go", "build", "-o", h.bin, ".").CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
-	home := filepath.Join(dir, "home")
-	repo := filepath.Join(dir, "repo")
-	os.MkdirAll(repo, 0o755)
+	os.MkdirAll(h.repo, 0o755)
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
-	addr := ln.Addr().String()
+	h.addr = ln.Addr().String()
 	ln.Close()
-	env := append(os.Environ(), "KANBAN_HOME="+home, "KANBAN_ADDR="+addr)
+	tmux := fmt.Sprintf("kanban-test-%d-%d", os.Getpid(), time.Now().UnixNano())
+	h.env = append(os.Environ(), "KANBAN_HOME="+h.home, "KANBAN_ADDR="+h.addr, "KANBAN_TMUX="+tmux)
+	t.Cleanup(func() {
+		h.stop()
+		exec.Command("tmux", "-L", tmux, "kill-server").Run()
+	})
+	return h
+}
 
-	run := func(stdin string, args ...string) (string, int) {
-		t.Helper()
-		cmd := exec.Command(bin, args...)
-		cmd.Env, cmd.Dir = env, repo
-		if stdin != "" {
-			cmd.Stdin = strings.NewReader(stdin)
-		}
-		out, _ := cmd.CombinedOutput()
-		return string(out), cmd.ProcessState.ExitCode()
+func (h *harness) start() {
+	h.t.Helper()
+	os.Remove(filepath.Join(h.home, "kanban.sock"))
+	h.server = exec.Command(h.bin)
+	h.server.Env = h.env
+	if err := h.server.Start(); err != nil {
+		h.t.Fatal(err)
 	}
-	expect := func(out string, code, wantCode int, wants ...string) {
-		t.Helper()
-		if code != wantCode {
-			t.Fatalf("exit %d, want %d\n%s", code, wantCode, out)
-		}
-		for _, w := range wants {
-			if !strings.Contains(out, w) {
-				t.Fatalf("missing %q in\n%s", w, out)
-			}
+	h.waitFor(func() bool {
+		_, code := h.run("", "server")
+		return code == 0
+	}, "server start")
+}
+
+func (h *harness) stop() {
+	if h.server != nil && h.server.Process != nil {
+		h.server.Process.Kill()
+		h.server.Wait()
+		h.server = nil
+	}
+}
+
+func (h *harness) run(stdin string, args ...string) (string, int) {
+	h.t.Helper()
+	cmd := exec.Command(h.bin, args...)
+	cmd.Env, cmd.Dir = h.env, h.repo
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
+	out, _ := cmd.CombinedOutput()
+	return string(out), cmd.ProcessState.ExitCode()
+}
+
+func (h *harness) expect(out string, code, wantCode int, wants ...string) {
+	h.t.Helper()
+	if code != wantCode {
+		h.t.Fatalf("exit %d, want %d\n%s", code, wantCode, out)
+	}
+	for _, w := range wants {
+		if !strings.Contains(out, w) {
+			h.t.Fatalf("missing %q in\n%s", w, out)
 		}
 	}
+}
+
+func (h *harness) waitFor(ok func() bool, what string) {
+	h.t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for !ok() {
+		if time.Now().After(deadline) {
+			h.t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func TestEndToEnd(t *testing.T) {
+	h := newHarness(t)
+	run, expect := h.run, h.expect
+	home, repo, addr := h.home, h.repo, h.addr
 
 	out, code := run("", "item", "1")
 	expect(out, code, 1, "server not running")
 
-	server := exec.Command(bin)
-	server.Env = env
-	if err := server.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { server.Process.Kill(); server.Wait() })
-	for i := 0; ; i++ {
-		if _, err := os.Stat(filepath.Join(home, "kanban.sock")); err == nil {
-			break
-		}
-		if i > 100 {
-			t.Fatal("server did not start")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	h.start()
 
 	out, code = run("")
 	expect(out, code, 0, "already running", "pid:")

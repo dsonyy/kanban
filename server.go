@@ -30,8 +30,10 @@ type columnView struct {
 }
 
 type cardView struct {
-	ID   int    `yaml:"id"`
-	Line string `yaml:"line"`
+	ID        int    `yaml:"id"`
+	Line      string `yaml:"line"`
+	Status    string `yaml:"status"`
+	Attention string `yaml:"attention,omitempty"`
 }
 
 type httpError struct {
@@ -45,7 +47,7 @@ func badRequest(format string, a ...any) error {
 	return httpError{http.StatusBadRequest, fmt.Errorf(format, a...)}
 }
 
-func serve(home, addr string) error {
+func serve(home, addr, tmuxName string) error {
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return err
 	}
@@ -74,7 +76,9 @@ func serve(home, addr string) error {
 	if err != nil {
 		return err
 	}
-	h := handler(&store{home: home})
+	s := &store{home: home, tmux: tmuxName}
+	go s.run()
+	h := handler(s)
 	errc := make(chan error, 2)
 	go func() { errc <- http.Serve(unixLn, h) }()
 	go func() { errc <- http.Serve(tcpLn, withToken(token, h)) }()
@@ -195,6 +199,15 @@ func dispatchItem(s *store, q query, body []byte) (any, error) {
 		return s.moveItem(proj, id, q.args[0])
 	case q.verb == "archive" && len(q.args) == 0:
 		return s.moveItem(proj, id, archive)
+	case q.verb == "approve" && len(q.args) == 0:
+		return s.approve(proj, id)
+	case q.verb == "retry" && len(q.args) == 0:
+		return s.retry(proj, id)
+	case q.verb == "attach" && len(q.args) == 0:
+		if err := s.ensureSession(proj, id); err != nil {
+			return nil, err
+		}
+		return map[string][]string{"command": {"tmux", "-L", s.tmux, "attach", "-t", "=" + sessionName(id)}}, nil
 	}
 	return nil, badRequest("unsupported: %s %s", q.method(), q.path())
 }
@@ -216,7 +229,7 @@ func boardOf(s *store, proj string) (boardView, error) {
 			return boardView{}, err
 		}
 		line, _, _ := strings.Cut(strings.TrimSpace(it.Content), "\n")
-		byColumn[it.Column] = append(byColumn[it.Column], cardView{ID: id, Line: line})
+		byColumn[it.Column] = append(byColumn[it.Column], cardView{ID: id, Line: line, Status: it.Status, Attention: it.Attention})
 	}
 	for _, c := range b.Columns {
 		items := byColumn[c.Name]

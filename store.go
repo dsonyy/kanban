@@ -24,6 +24,7 @@ var (
 
 type store struct {
 	home string
+	tmux string
 	// ponytail: one lock for all writes, per-project locks if agents ever contend on it
 	mu sync.Mutex
 }
@@ -34,7 +35,29 @@ type project struct {
 
 type column struct {
 	Name  string `yaml:"name"`
-	Steps []any  `yaml:"steps"`
+	Steps []step `yaml:"steps"`
+}
+
+type step struct {
+	Shell   string        `yaml:"shell,omitempty"`
+	Agent   string        `yaml:"agent,omitempty"`
+	Human   string        `yaml:"human,omitempty"`
+	Goto    string        `yaml:"goto,omitempty"`
+	Timeout time.Duration `yaml:"timeout,omitempty"`
+	Idle    time.Duration `yaml:"idle,omitempty"`
+}
+
+func (s step) kind() string {
+	kinds := []string{}
+	for kind, v := range map[string]string{"shell": s.Shell, "agent": s.Agent, "human": s.Human, "goto": s.Goto} {
+		if v != "" {
+			kinds = append(kinds, kind)
+		}
+	}
+	if len(kinds) != 1 {
+		return ""
+	}
+	return kinds[0]
 }
 
 type board struct {
@@ -42,24 +65,46 @@ type board struct {
 }
 
 type itemState struct {
-	Column  string    `yaml:"column"`
-	Created time.Time `yaml:"created"`
+	Column    string    `yaml:"column"`
+	Created   time.Time `yaml:"created"`
+	Step      int       `yaml:"step"`
+	Status    string    `yaml:"status,omitempty"`
+	Kind      string    `yaml:"kind,omitempty"`
+	Pane      string    `yaml:"pane,omitempty"`
+	Started   time.Time `yaml:"started,omitempty"`
+	Attention string    `yaml:"attention,omitempty"`
 }
 
 type event struct {
-	At    time.Time `yaml:"at"`
-	Event string    `yaml:"event"`
-	From  string    `yaml:"from,omitempty"`
-	To    string    `yaml:"to,omitempty"`
+	At      time.Time `yaml:"at"`
+	Event   string    `yaml:"event"`
+	From    string    `yaml:"from,omitempty"`
+	To      string    `yaml:"to,omitempty"`
+	Column  string    `yaml:"column,omitempty"`
+	Step    *int      `yaml:"step,omitempty"`
+	Kind    string    `yaml:"kind,omitempty"`
+	Exit    *int      `yaml:"exit,omitempty"`
+	Took    string    `yaml:"took,omitempty"`
+	Log     string    `yaml:"log,omitempty"`
+	Message string    `yaml:"message,omitempty"`
 }
 
 type item struct {
-	ID      int       `yaml:"id"`
-	Project string    `yaml:"project"`
-	Column  string    `yaml:"column"`
-	Created time.Time `yaml:"created"`
-	Content string    `yaml:"content"`
+	ID        int       `yaml:"id"`
+	Project   string    `yaml:"project"`
+	Column    string    `yaml:"column"`
+	Step      int       `yaml:"step"`
+	Status    string    `yaml:"status"`
+	Attention string    `yaml:"attention,omitempty"`
+	Created   time.Time `yaml:"created"`
+	Content   string    `yaml:"content"`
 }
+
+type config struct {
+	Agents int `yaml:"agents"`
+}
+
+func now() time.Time { return time.Now().UTC().Truncate(time.Second) }
 
 func (s *store) projectDir(name string) string { return filepath.Join(s.home, "projects", name) }
 
@@ -131,7 +176,7 @@ func (s *store) createProject(name, repo string) error {
 	}
 	b := board{}
 	for _, c := range []string{"backlog", "todo", "doing", "done"} {
-		b.Columns = append(b.Columns, column{Name: c, Steps: []any{}})
+		b.Columns = append(b.Columns, column{Name: c, Steps: []step{}})
 	}
 	if err := writeYAML(filepath.Join(dir, "project.yaml"), project{Repo: repo}); err != nil {
 		return err
@@ -201,7 +246,7 @@ func (s *store) item(proj string, id int) (item, error) {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return item{}, err
 	}
-	return item{ID: id, Project: proj, Column: st.Column, Created: st.Created, Content: string(content)}, nil
+	return item{ID: id, Project: proj, Column: st.Column, Step: st.Step, Status: st.Status, Attention: st.Attention, Created: st.Created, Content: string(content)}, nil
 }
 
 func (s *store) createItem(proj, col string, content []byte) (item, error) {
@@ -227,14 +272,13 @@ func (s *store) createItem(proj, col string, content []byte) (item, error) {
 	if err != nil {
 		return item{}, err
 	}
-	now := time.Now().UTC().Truncate(time.Second)
 	if err := writeFile(s.itemPath(proj, id, ".md"), content); err != nil {
 		return item{}, err
 	}
-	if err := writeYAML(s.itemPath(proj, id, ".yaml"), itemState{Column: col, Created: now}); err != nil {
+	if err := writeYAML(s.itemPath(proj, id, ".yaml"), itemState{Column: col, Created: now(), Status: "pending"}); err != nil {
 		return item{}, err
 	}
-	if err := s.logEvent(proj, id, event{At: now, Event: "created", To: col}); err != nil {
+	if err := s.logEvent(proj, id, event{At: now(), Event: "created", To: col}); err != nil {
 		return item{}, err
 	}
 	return s.item(proj, id)
@@ -271,7 +315,7 @@ func (s *store) editItem(proj string, id int, content []byte) (item, error) {
 	if err := writeFile(s.itemPath(proj, id, ".md"), content); err != nil {
 		return item{}, err
 	}
-	if err := s.logEvent(proj, id, event{At: time.Now().UTC().Truncate(time.Second), Event: "edited"}); err != nil {
+	if err := s.logEvent(proj, id, event{At: now(), Event: "edited"}); err != nil {
 		return item{}, err
 	}
 	return s.item(proj, id)
@@ -287,21 +331,80 @@ func (s *store) moveItem(proj string, id int, to string) (item, error) {
 			return item{}, fmt.Errorf("column %q: %w", to, errNotFound)
 		}
 	}
+	return s.transition(proj, id, func(st *itemState) (event, error) {
+		e := event{Event: "moved", From: st.Column, To: to}
+		*st = itemState{Column: to, Created: st.Created, Status: "pending"}
+		return e, nil
+	})
+}
+
+func (s *store) approve(proj string, id int) (item, error) {
+	return s.transition(proj, id, func(st *itemState) (event, error) {
+		if st.Status != "waiting" {
+			return event{}, badRequest("item %d is %s, not waiting for approval", id, st.Status)
+		}
+		e := event{Event: "approved", Column: st.Column, Step: ptr(st.Step)}
+		st.Step, st.Status, st.Attention = st.Step+1, "pending", ""
+		return e, nil
+	})
+}
+
+func (s *store) retry(proj string, id int) (item, error) {
+	return s.transition(proj, id, func(st *itemState) (event, error) {
+		if st.Status != "failed" {
+			return event{}, badRequest("item %d is %s, only failed items can be retried", id, st.Status)
+		}
+		e := event{Event: "retried", Column: st.Column, Step: ptr(st.Step)}
+		st.Status, st.Kind, st.Pane, st.Attention = "pending", "", "", ""
+		return e, nil
+	})
+}
+
+func (s *store) transition(proj string, id int, fn func(*itemState) (event, error)) (item, error) {
+	err := s.update(proj, id, func(st *itemState) ([]event, error) {
+		e, err := fn(st)
+		return []event{e}, err
+	})
+	if err != nil {
+		return item{}, err
+	}
+	return s.item(proj, id)
+}
+
+func (s *store) update(proj string, id int, fn func(*itemState) ([]event, error)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var st itemState
 	if err := readYAML(s.itemPath(proj, id, ".yaml"), &st); err != nil {
-		return item{}, err
+		return err
 	}
-	from := st.Column
-	st.Column = to
-	if err := writeYAML(s.itemPath(proj, id, ".yaml"), st); err != nil {
-		return item{}, err
+	before := st
+	evs, err := fn(&st)
+	if err != nil {
+		return err
 	}
-	if err := s.logEvent(proj, id, event{At: time.Now().UTC().Truncate(time.Second), Event: "moved", From: from, To: to}); err != nil {
-		return item{}, err
+	if st != before {
+		if err := writeYAML(s.itemPath(proj, id, ".yaml"), st); err != nil {
+			return err
+		}
 	}
-	return s.item(proj, id)
+	for _, e := range evs {
+		if e.At.IsZero() {
+			e.At = now()
+		}
+		if err := s.logEvent(proj, id, e); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ptr[T any](v T) *T { return &v }
+
+func (s *store) config() config {
+	c := config{Agents: 3}
+	readYAML(filepath.Join(s.home, "config.yaml"), &c)
+	return c
 }
 
 func (s *store) logEvent(proj string, id int, e event) error {

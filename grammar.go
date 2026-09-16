@@ -8,12 +8,15 @@ import (
 
 var resources = []string{"server", "project", "item"}
 
-var verbs = map[string]struct{ post, body bool }{
-	"new":     {true, true},
-	"edit":    {true, true},
-	"move":    {true, false},
-	"archive": {true, false},
-	"log":     {false, false},
+var verbs = map[string]struct{ post, body, exec bool }{
+	"new":     {post: true, body: true},
+	"edit":    {post: true, body: true},
+	"move":    {post: true},
+	"archive": {post: true},
+	"approve": {post: true},
+	"retry":   {post: true},
+	"log":     {},
+	"attach":  {exec: true},
 }
 
 type query struct {
