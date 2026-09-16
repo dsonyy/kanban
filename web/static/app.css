@@ -71,6 +71,7 @@ textarea { width: 100%; padding: 8px; resize: vertical; display: block; }
 }
 .column h2 { display: flex; justify-content: space-between; padding: 8px 10px; border-bottom: 1px solid var(--line); }
 .column.drop { border-color: var(--text); }
+.column.missing { border-style: dashed; }
 .cards { flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 8px; }
 .card {
   display: flex;

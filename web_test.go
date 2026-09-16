@@ -178,3 +178,25 @@ func TestTerminalWebSocket(t *testing.T) {
 		t.Fatalf("resize not applied: %q %v", size, err)
 	}
 }
+
+func TestTasksInRemovedColumnStayVisible(t *testing.T) {
+	h := newHarness(t)
+	h.start()
+	h.project("demo", "columns:\n  - name: todo\n    steps: []\n  - name: doing\n    steps: []\n")
+	id := h.newItem("doing", "Lives in doing\n")
+	h.waitItem(id, "status: done")
+	edit := h.cmd("project", "demo", "board", "edit")
+	edit.Stdin = strings.NewReader("columns:\n  - name: todo\n    steps: []\n  - name: in-progress\n    steps: []\n")
+	if b, err := edit.CombinedOutput(); err != nil {
+		t.Fatalf("board edit: %v\n%s", err, b)
+	}
+
+	out, _ := h.run("", "project", "demo")
+	if !strings.Contains(out, "name: doing") || !strings.Contains(out, "missing: true") || !strings.Contains(out, "line: Lives in doing") {
+		t.Fatalf("task in a removed column vanished from the board:\n%s", out)
+	}
+	_, page := h.get(h.browser(), "/ui/demo")
+	if !strings.Contains(page, "Lives in doing") || !strings.Contains(page, "not in board.yaml") {
+		t.Fatal("task in a removed column is not on the web board")
+	}
+}

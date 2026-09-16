@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -25,8 +26,9 @@ type boardView struct {
 }
 
 type columnView struct {
-	Name  string     `yaml:"name"`
-	Items []cardView `yaml:"items"`
+	Name    string     `yaml:"name"`
+	Missing bool       `yaml:"missing,omitempty"`
+	Items   []cardView `yaml:"items"`
 }
 
 type cardView struct {
@@ -326,6 +328,17 @@ func boardOf(s *store, proj string) (boardView, error) {
 			items = []cardView{}
 		}
 		v.Columns = append(v.Columns, columnView{Name: c.Name, Items: items})
+		delete(byColumn, c.Name)
+	}
+	// Tasks whose column was removed or renamed in board.yaml would otherwise disappear from every view.
+	delete(byColumn, archive)
+	var missing []string
+	for name := range byColumn {
+		missing = append(missing, name)
+	}
+	slices.Sort(missing)
+	for _, name := range missing {
+		v.Columns = append(v.Columns, columnView{Name: name, Missing: true, Items: byColumn[name]})
 	}
 	return v, nil
 }
